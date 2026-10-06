@@ -1,0 +1,97 @@
+# job-radar config. Copy to config.toml (gitignored) and edit; every run re-reads it.
+
+[settings]
+resume_path = "~/path/to/resume.docx"   # .docx; contact info above EDUCATION is stripped
+db_path = "job-radar.db"            # relative to the project folder
+provider = "openai"                 # "openai" or "anthropic"; the matching API key goes in .env
+model = "gpt-5-mini"                # anthropic: "claude-opus-5-5"
+effort = "low"                      # reasoning effort; low is plenty for fit scoring. "" to omit (non-reasoning models)
+max_age_days = 14                   # ignore postings older than this
+max_llm_calls_per_run = 40          # cost cap per run
+alert_threshold = 70                # min fit_score to alert on
+big_board_mb = 5                    # boards whose download is at least this big...
+big_board_interval_minutes = 60     # ...are checked at most this often (OpenAI, Palantir)
+max_alerts_per_run = 10             # each match is its own Slack message, sent as soon as it's scored
+
+# Board slugs, verified with `python -m job_radar check-companies`.
+# Find a company's slug in its careers URL:
+#   job-boards.greenhouse.io/<slug>, jobs.lever.co/<slug>, jobs.ashbyhq.com/<slug>
+[companies]
+greenhouse = [
+  "cloudflare", "okta", "huntress", "tines", "datadog", "discord", "stripe",  # examples
+  "roblox", "riotgames", "epicgames",  # gaming; also listed under [gaming]
+]
+# Workday career sites: "tenant.wdN/site" from the careers URL
+# (https://<tenant>.<wdN>.myworkdayjobs.com/<site>). Checked newest-first; see sources/workday.py.
+workday = ["crowdstrike.wd5/crowdstrikecareers", "nvidia.wd5/NVIDIAExternalCareerSite"]
+# Activision Blizzard's career site (careers.<slug>.com); descriptions come from its Workday postings.
+phenom = ["activisionblizzard"]
+# GameJobs.co searches (queries, not companies). Jobs it re-lists from boards above are skipped.
+gamejobs = ["security", "anti-cheat", "threat", "detection", "incident response", "fraud"]
+lever = ["palantir", "xsolla"]
+ashby = ["snyk", "1password", "hackerone", "openai"]
+
+# Dream-industry boost: jobs at these companies (board slugs, any ATS) alert at a
+# lower threshold, are tagged 🎮, and sort first. Claude/GPT still scores fit honestly.
+[gaming]
+alert_threshold = 60
+any_us_location = false             # true = gaming jobs anywhere in the US pass the location filter
+sources = ["gamejobs"]              # every job from these sources counts as gaming
+companies = ["activisionblizzard", "discord", "roblox", "riotgames", "epicgames", "xsolla"]
+
+# $ per million tokens, for the `stats` spend estimate. Check current prices on the
+# provider's pricing page; models without an entry just show token totals.
+# OpenAI bills cached input at a discount and has no cache-write charge.
+[prices."claude-opus-5-5"]
+input = 4.00
+output = 20.00
+cache_read = 0.20
+cache_write = 5.00   # 5-minute cache writes bill at 1.25x input
+
+# [prices."gpt-5-mini"]
+# input = 0.0
+# output = 0.0
+# cache_read = 0.0
+# cache_write = 0.0
+
+[filters]
+# Title must contain at least one of these (case-insensitive, whole words).
+title_include = [
+  "security", "secops", "infosec", "cyber", "detection", "threat",
+  # not bare "soc": at chip companies (Intel, Nvidia) SoC = system-on-chip
+  "soc analyst", "soc engineer", "soc operations", "security operations",
+  "incident response", "d&r", "soar", "vulnerability", "appsec", "red team",
+  "blue team", "purple team", "dfir", "trust and safety", "trust & safety",
+  # game-security titles often skip the word "security"
+  "anti-cheat", "anticheat", "cheat", "fraud", "incident",
+]
+# Title must contain none of these.
+title_exclude = [
+  "senior", "sr", "staff", "principal", "lead", "manager", "director", "head",
+  "vp", "vice president", "chief", "architect", "fellow", "distinguished",
+  "iii", "iv", "intern", "interns", "internship", "internships", "sales", "account executive",
+  "account manager", "marketing", "recruiter", "counsel", "attorney", "legal",
+  # GRC and physical security are off-target for now
+  "grc", "compliance", "governance", "audit", "facility", "gsoc", "physical security",
+  "level 5", "level 6", "level 7", "l5", "l6", "l7",  # senior levels (Snap and others)
+]
+bay_area = [
+  "san jose", "santa clara", "sunnyvale", "mountain view", "palo alto",
+  "menlo park", "redwood city", "san mateo", "san francisco", "sf", "oakland",
+  "fremont", "milpitas", "cupertino", "foster city", "burlingame", "san carlos",
+  "belmont", "berkeley", "emeryville", "pleasanton", "campbell", "los gatos",
+  "san bruno", "hayward", "bay area", "silicon valley",
+]
+# A remote posting is kept unless it names a non-US region and no US marker.
+us_markers = ["us", "usa", "u.s.", "united states", "north america", "americas"]
+non_us_markers = [
+  "emea", "europe", "uk", "united kingdom", "london", "canada", "toronto",
+  "vancouver", "india", "bangalore", "bengaluru", "israel", "tel aviv", "germany",
+  "berlin", "apac", "latam", "brazil", "mexico", "australia", "sydney", "japan",
+  "tokyo", "singapore", "ireland", "dublin", "poland", "netherlands", "amsterdam",
+  "france", "paris", "spain", "madrid", "portugal", "lisbon", "costa rica",
+  "argentina", "colombia", "philippines", "romania", "czech", "korea", "seoul",
+  "montreal", "quebec", "ontario", "british columbia", "scotland", "dundee", "edinburgh",
+  "sweden", "stockholm", "finland", "helsinki", "china", "shanghai", "azerbaijan", "baku",
+  "gb", "worldwide",
+]
