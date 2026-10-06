@@ -1,0 +1,10 @@
+[{
+  "id": "7bd20bd6-0000-0000-0000-cca4713ce13c", "text": "Threat Intelligence Analyst",
+  "categories": {"commitment": "Full-time", "location": "San Jose, California", "allLocations": ["San Jose, California"]},
+  "createdAt": 1788878610777, "country": "US", "workplaceType": "hybrid",
+  "descriptionPlain": "Track phishing infrastructure.",
+  "lists": [{"text": "Requirements", "content": "<li>OSINT</li><li>Python</li>"}],
+  "additionalPlain": "EEO statement.",
+  "hostedUrl": "https://jobs.lever.co/acme/7bd20bd6",
+  "salaryRange": {"currency": "USD", "interval": "per-year-salary", "min": 110000, "max": 140000}
+}]

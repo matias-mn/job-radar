@@ -1,0 +1,12 @@
+{"apiVersion": "1", "jobs": [{
+  "id": "4e71b808-0000-0000-0000-d7176dd1bce0", "title": "Detection Engineer",
+  "location": "Remote", "secondaryLocations": [{"location": "United States"}],
+  "publishedAt": "2026-08-26T19:27:09.305+00:00", "isListed": true, "isRemote": true,
+  "address": {"postalAddress": {"addressCountry": "USA", "addressLocality": "San Francisco"}},
+  "jobUrl": "https://jobs.ashbyhq.com/acme/4e71b808",
+  "descriptionPlain": "Write Sigma rules.",
+  "compensation": {"compensationTierSummary": "$130K – $160K", "scrapeableCompensationSalarySummary": null}
+}, {
+  "id": "unlisted", "title": "Hidden", "location": "Remote", "isListed": false, "isRemote": true,
+  "publishedAt": "2026-08-26T19:27:09.305+00:00", "jobUrl": "x", "descriptionPlain": ""
+}]}

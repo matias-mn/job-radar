@@ -1,0 +1,9 @@
+{"jobs": [{
+  "absolute_url": "https://job-boards.greenhouse.io/acme/jobs/111",
+  "id": 111, "title": "Associate SOC Analyst ",
+  "location": {"name": "Remote"},
+  "offices": [{"id": 1, "name": "Remote", "location": "Remote"}],
+  "updated_at": "2026-09-24T17:40:40-04:00",
+  "first_published": "2026-09-18T10:51:21-04:00",
+  "content": "&lt;p&gt;You&amp;rsquo;ll &lt;strong&gt;hunt threats&lt;/strong&gt;.&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Python&lt;/li&gt;&lt;li&gt;SIEM&lt;/li&gt;&lt;/ul&gt;"
+}], "meta": {"total": 1}}

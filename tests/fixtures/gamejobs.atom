@@ -1,0 +1,15 @@
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>GameJobs.co Jobs</title>
+  <entry>
+    <title>Game Security Analyst at Rockstar</title>
+    <id>https://gamejobs.co/Game-Security-Analyst-at-Rockstar-4115</id>
+    <link rel="alternate" href="https://gamejobs.co/Game-Security-Analyst-at-Rockstar-4115"></link>
+    <updated>2026-09-30T15:28:43+00:00</updated>
+  </entry>
+  <entry>
+    <title>Anti-Cheat Analyst at Studio at Large</title>
+    <id>https://gamejobs.co/Anti-Cheat-Analyst-at-Studio-at-Large</id>
+    <link rel="alternate" href="https://gamejobs.co/Anti-Cheat-Analyst-at-Studio-at-Large"></link>
+    <updated>2026-10-01T10:00:00+00:00</updated>
+  </entry>
+</feed>
