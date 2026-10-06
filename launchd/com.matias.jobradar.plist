@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.matias.jobradar</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PROJECT_DIR__/.venv/bin/python</string>
+        <string>-m</string>
+        <string>job_radar</string>
+        <string>run</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_DIR__</string>
+
+    <!-- Every 15 minutes. Unchanged boards answer 304, so most runs download almost nothing.
+         launchd skips runs while the Mac sleeps and runs once on wake. -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__PROJECT_DIR__/logs/job-radar.log</string>
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_DIR__/logs/job-radar.log</string>
+</dict>
+</plist>
