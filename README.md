@@ -6,7 +6,7 @@ Pulls new security job postings from public job boards (Greenhouse, Lever, Ashby
 70 job boards ──▶ filters ──▶ LLM scores fit ───▶ SQLite ──▶ Slack, one message per match
  (changed boards   (title, level,   (new jobs only,                (score ≥ 70, or ≥ 60 at
   only, via ETag)   Bay Area/remote  0-100 + reasons)               gaming companies 🎮)
-                    US, ≤14 days)
+                    US, ≤15 days)
 ```
 
 **Why polling is cheap:** every board returns an ETag. job-radar sends it back on the next check, and boards with no changes answer `304 Not Modified` with an empty body. Greenhouse lists are fetched without descriptions; a description is downloaded only for a new job that passes the filters. A full check of all 70 boards is ~42 MB, and a check where nothing changed is ~0 MB. LLM cost doesn't depend on how often it checks, because each job is scored once.
@@ -62,7 +62,8 @@ Use a **personal** key, not a work one. Each call sends your resume and shows yo
 - **Filters:** `title_include`, `title_exclude`, `bay_area`, `us_markers`, `non_us_markers`.
 - **Thresholds:** `alert_threshold`, `max_age_days`, `max_llm_calls_per_run` (cost cap).
 - **Gaming:** `[gaming] any_us_location = true` lets gaming jobs anywhere in the US through the location filter. Board slugs under `[gaming] companies` (and every job from `[gaming] sources`) alert at `[gaming] alert_threshold` (default 60) instead of 70, get a 🎮 tag, and are sent first. The LLM is told about the preference but still scores fit honestly; the boost is applied by the threshold, not by inflating scores.
-- **What "a good fit" means:** the rubric in `job_radar/scorer.py` (`RUBRIC`).
+- **What "a good fit" means:** the rubric in `job_radar/scorer.py` (`RUBRIC`). It scores how well the resume matches and how realistic the job is. Shift work, on-call and role type (SOC, GRC, physical security) don't lower the score; they're flagged so I can decide.
+- **Each alert shows** a job category (SOC / Security Operations, Detection & Response, GRC, Physical Security, …; the list is `CATEGORIES` in `job_radar/models.py`), the posted date, and a shift/on-call tag.
 - **Resume:** read live from `resume_path`, so editing the .docx takes effect on the next run. Everything above the EDUCATION header (name, phone, email) is removed before it's sent to the API.
 
 ## Schedule (launchd)

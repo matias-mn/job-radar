@@ -19,7 +19,7 @@ from . import html_to_text, parse_iso
 
 PAGE = 20  # Workday's maximum
 MAX_PAGES = 60
-MAX_AGE_DAYS = 14
+MAX_AGE_DAYS = 15  # keep in step with max_age_days in config.toml
 SEEN_CAP = 3000  # job IDs remembered per board
 POSTED_RE = re.compile(r"(\d+)\+? Days? Ago", re.I)
 MULTI_LOCATION_RE = re.compile(r"^\d+ Locations?$", re.I)

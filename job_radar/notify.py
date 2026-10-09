@@ -1,5 +1,7 @@
 """Slack digest via an incoming webhook."""
 
+from datetime import datetime
+
 import httpx
 
 
@@ -9,6 +11,21 @@ def _esc(text: str) -> str:
 
 def _badge(score: int) -> str:
     return "🟢" if score >= 85 else "🟡" if score >= 70 else "⚪"
+
+
+def _posted(posted_at: str | None) -> str:
+    if not posted_at:
+        return "posted date unknown"
+    d = datetime.fromisoformat(posted_at)
+    return f"posted {d:%b} {d.day}, {d.year}"
+
+
+def _tags(r: dict) -> str:
+    """Category, listing date, and a shift/on-call marker."""
+    tags = [r.get("category") or "uncategorized", _posted(r.get("posted_at"))]
+    if r.get("shift_or_oncall"):
+        tags.append("shift/on-call")
+    return " · ".join(tags)
 
 
 def build_digest(rows: list[dict]) -> dict:
@@ -23,6 +40,7 @@ def build_digest(rows: list[dict]) -> dict:
         lines = [
             f"{_badge(r['fit_score'])} *{r['fit_score']}*  <{r['url']}|{_esc(r['title'])}>" + ("  🎮" if r.get("gaming") else ""),
             f"*{_esc(r['company'])}* · {where}" + (f" · {_esc(r['comp'])}" if r.get("comp") else ""),
+            f"🏷️ {_esc(_tags(r))}",
             _esc(r["why"] or ""),
         ]
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)[:3000]}})
@@ -48,6 +66,7 @@ def format_text(rows: list[dict]) -> str:
     out = []
     for r in rows:
         out.append(f"[{r['fit_score']:>3}]{' 🎮' if r.get('gaming') else ''} {r['title']} — {r['company']} — {r['location']}")
+        out.append(f"      {_tags(r)}")
         out.append(f"      {r['url']}")
         out.append(f"      {r['why']}")
         if r["matched_skills"]:

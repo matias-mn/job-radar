@@ -27,10 +27,20 @@ class Job:
         return f"{self.source}:{self.company}:{self.ext_id}"
 
 
+CATEGORIES = (
+    "SOC / Security Operations", "Detection & Response", "Incident Response", "Security Engineering",
+    "Security Automation", "Application / Product Security", "Cloud / Infrastructure Security",
+    "Threat Intelligence", "Vulnerability Management", "Offensive Security / Red Team", "GRC / Risk & Compliance",
+    "Trust & Safety / Fraud", "Game Security / Anti-Cheat", "Physical Security", "Other",
+)
+Category = Literal[CATEGORIES]
+
+
 class FitScore(BaseModel):
     """What Claude returns for one job. Field descriptions go into the JSON schema."""
 
-    fit_score: int = Field(description="0-100. How well the candidate fits AND would want this job.")
+    fit_score: int = Field(description="0-100. How well the candidate's background matches and how realistic the job is for them.")
+    category: Category = Field(description="The kind of security job this is, judged from the duties, not just the title.")
     seniority_fit: Literal["good", "stretch", "too_senior"] = Field(
         description="good = new grad / entry level; stretch = asks for ~2-3 years; too_senior = 4+ years or senior scope."
     )

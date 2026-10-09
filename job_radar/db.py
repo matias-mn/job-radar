@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS scores (
     refused INTEGER NOT NULL DEFAULT 0,
     model TEXT, resume_hash TEXT, scored_at TEXT,
     input_tokens INTEGER, output_tokens INTEGER,
-    cache_read_tokens INTEGER, cache_write_tokens INTEGER
+    cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+    category TEXT
 );
 CREATE TABLE IF NOT EXISTS alerts (
     key TEXT PRIMARY KEY REFERENCES jobs(key),
@@ -51,6 +52,8 @@ class DB:
         for col, kind in (("bytes", "INTEGER"), ("fetched_at", "TEXT")):  # added in v0.3
             if col not in columns:
                 self.conn.execute(f"ALTER TABLE boards ADD COLUMN {col} {kind}")
+        if "category" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(scores)")}:  # added in v0.4
+            self.conn.execute("ALTER TABLE scores ADD COLUMN category TEXT")
 
     def upsert_jobs(self, jobs: list[Job], status: str = "new") -> None:
         """status='filtered' records jobs dropped after hydration so they aren't fetched again."""
@@ -137,13 +140,13 @@ class DB:
     def save_score(self, key: str, fit: FitScore | None, *, refused: bool, model: str, resume_hash: str, usage) -> None:
         f = fit.model_dump() if fit else {}
         self.conn.execute(
-            """INSERT OR REPLACE INTO scores VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT OR REPLACE INTO scores VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 key, f.get("fit_score"), f.get("seniority_fit"),
                 json.dumps(f.get("matched_skills", [])), json.dumps(f.get("missing_skills", [])),
                 json.dumps(f.get("red_flags", [])), int(f.get("shift_or_oncall", False)), f.get("why"),
                 int(refused), model, resume_hash, _now(),
-                usage.input, usage.output, usage.cache_read, usage.cache_write,
+                usage.input, usage.output, usage.cache_read, usage.cache_write, f.get("category"),
             ),
         )
         self.conn.commit()
@@ -153,7 +156,7 @@ class DB:
         floor = min(threshold, gaming_threshold) if is_gaming and gaming_threshold is not None else threshold
         rows = self.conn.execute(
             """SELECT j.*, s.fit_score, s.seniority_fit, s.matched_skills, s.missing_skills,
-                      s.red_flags, s.shift_or_oncall, s.why
+                      s.red_flags, s.shift_or_oncall, s.why, s.category
                FROM scores s JOIN jobs j USING (key)
                WHERE s.refused = 0 AND s.fit_score >= ? AND s.seniority_fit != 'too_senior'
                  AND j.status != 'dismissed'

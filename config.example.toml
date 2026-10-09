@@ -6,7 +6,7 @@ db_path = "job-radar.db"            # relative to the project folder
 provider = "openai"                 # "openai" or "anthropic"; the matching API key goes in .env
 model = "gpt-5-mini"                # anthropic: "claude-opus-5-5"
 effort = "low"                      # reasoning effort; low is plenty for fit scoring. "" to omit (non-reasoning models)
-max_age_days = 14                   # ignore postings older than this
+max_age_days = 15                   # ignore postings older than this
 max_llm_calls_per_run = 40          # cost cap per run
 alert_threshold = 70                # min fit_score to alert on
 big_board_mb = 5                    # boards whose download is at least this big...
@@ -59,7 +59,8 @@ cache_write = 5.00   # 5-minute cache writes bill at 1.25x input
 title_include = [
   "security", "secops", "infosec", "cyber", "detection", "threat",
   # not bare "soc": at chip companies (Intel, Nvidia) SoC = system-on-chip
-  "soc analyst", "soc engineer", "soc operations", "security operations",
+  "soc analyst", "soc engineer", "soc operations", "soc specialist", "soc tier", "security operations",
+  "mdr", "siem", "gsoc",
   "incident response", "d&r", "soar", "vulnerability", "appsec", "red team",
   "blue team", "purple team", "dfir", "trust and safety", "trust & safety",
   # game-security titles often skip the word "security"
@@ -71,8 +72,6 @@ title_exclude = [
   "vp", "vice president", "chief", "architect", "fellow", "distinguished",
   "iii", "iv", "intern", "interns", "internship", "internships", "sales", "account executive",
   "account manager", "marketing", "recruiter", "counsel", "attorney", "legal",
-  # GRC and physical security are off-target for now
-  "grc", "compliance", "governance", "audit", "facility", "gsoc", "physical security",
   "level 5", "level 6", "level 7", "l5", "l6", "l7",  # senior levels (Snap and others)
 ]
 bay_area = [

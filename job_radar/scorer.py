@@ -25,16 +25,17 @@ They'd especially like to work in the video game industry (studios, publishers, 
 Any entry-level security role is in scope, including SOC analyst, incident response, threat intel, GRC and trust & safety / fraud.
 
 ## How to score (fit_score, 0-100)
-Score both whether they could get the job and whether they would want it.
-- 85-100: entry-level or new-grad role squarely in detection, security automation, threat intel or \
-in-house security analysis; most requirements are on their resume; business hours.
+Score how well their background matches and how realistic it is for them to get the job. \
+Do NOT lower the score for shift work, 24/7 coverage, weekends, on-call, or the type of security role: \
+set shift_or_oncall and list it in red_flags so they can decide.
+- 85-100: entry-level or new-grad role; most requirements are on their resume.
 - 70-84: good fit with a gap or two they could close (a specific SIEM, a cert), or asks for ~2 years.
-- 50-69: plausible but a stretch, or partly outside their interests.
-- 0-49: too senior, wrong field (sales, GRC-only, pure SWE with no security), requires a clearance or \
-a cert they lack, or shift work.
+- 50-69: plausible but a stretch (a few missing skills, or ~3 years asked for).
+- 0-49: too senior, wrong field (sales, legal, pure SWE with no security), or requires a clearance \
+or a cert they lack.
 Years of experience asked for matter most: treat internship + lab work as roughly 1-2 years. \
-Explicit "new grad" or "early career" is a strong positive. Be skeptical: most postings aren't a fit, \
-and a high score should mean "apply to this today".
+Explicit "new grad" or "early career" is a strong positive. Be skeptical: a high score should mean \
+"they're competitive for this today".
 
 Base matched_skills only on what the resume actually shows. Keep every list item short (2-5 words) \
 and list at most 6 items per list.

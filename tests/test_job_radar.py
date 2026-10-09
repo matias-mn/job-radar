@@ -94,7 +94,9 @@ def test_html_to_text_unescapes_greenhouse_double_escaping():
     ("Security Engineering Manager", False),
     ("Security Engineering Intern", False),
     ("Security Sales Engineer", False),
-    ("Security GRC Analyst", False),
+    ("Security GRC Analyst", True),           # GRC and SOC roles are in scope since 2026-10-07
+    ("SOC Tier 1 Analyst", True),
+    ("MDR Analyst", True),
     ("Social Media Manager", False),          # "soc" must be a whole word
     ("Software Engineer, Payments", False),
 ])
@@ -151,7 +153,7 @@ def usage():
 
 
 def fit(score, seniority="good"):
-    return FitScore(fit_score=score, seniority_fit=seniority, matched_skills=["Python"], missing_skills=["Splunk"],
+    return FitScore(fit_score=score, category="SOC / Security Operations", seniority_fit=seniority, matched_skills=["Python"], missing_skills=["Splunk"],
                     red_flags=[], shift_or_oncall=False, why="Good fit.")
 
 
@@ -255,7 +257,26 @@ def test_slack_digest_shape():
     section = blocks[1]["text"]["text"]
     assert "<https://x|SOC &lt;Analyst&gt;>" in section and "Fits &amp; then some." in section
     assert "🚩 on-call" in blocks[2]["elements"][0]["text"]
+    assert "🏷️ uncategorized · posted date unknown" in section
     assert len(blocks) <= 50
+
+
+def test_slack_shows_category_date_and_shift():
+    row = {"key": "k", "title": "SOC Analyst", "company": "acme", "location": "Remote", "remote": 1,
+           "url": "https://x", "comp": None, "fit_score": 80, "why": "w", "category": "SOC / Security Operations",
+           "posted_at": "2026-10-03T17:00:00+00:00", "shift_or_oncall": 1,
+           "matched_skills": [], "missing_skills": [], "red_flags": []}
+    section = notify.build_digest([row])["blocks"][1]["text"]["text"]
+    assert "🏷️ SOC / Security Operations · posted Oct 3, 2026 · shift/on-call" in section
+    assert "SOC / Security Operations · posted Oct 3, 2026" in notify.format_text([row])
+
+
+def test_score_saves_category(tmp_path):
+    db = DB(tmp_path / "t.db")
+    job = make_job()
+    db.upsert_jobs([job])
+    db.save_score(job.key, fit(90), refused=False, model="m", resume_hash="h", usage=usage())
+    assert db.pending_alerts(threshold=70, limit=10)[0]["category"] == "SOC / Security Operations"
 
 
 # ---- scorers (mocked HTTP; both SDKs use httpx2) ----
