@@ -97,6 +97,7 @@ def test_html_to_text_unescapes_greenhouse_double_escaping():
     ("Security GRC Analyst", True),           # GRC and SOC roles are in scope since 2026-10-07
     ("SOC Tier 1 Analyst", True),
     ("MDR Analyst", True),
+    ("Cybersecurity Analyst in Santa Clara, CA", True),
     ("Social Media Manager", False),          # "soc" must be a whole word
     ("Software Engineer, Payments", False),
 ])

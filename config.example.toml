@@ -57,7 +57,7 @@ cache_write = 5.00   # 5-minute cache writes bill at 1.25x input
 [filters]
 # Title must contain at least one of these (case-insensitive, whole words).
 title_include = [
-  "security", "secops", "infosec", "cyber", "detection", "threat",
+  "security", "secops", "infosec", "cyber", "cybersecurity", "detection", "threat",  # whole words, so "cyber" alone misses "Cybersecurity"
   # not bare "soc": at chip companies (Intel, Nvidia) SoC = system-on-chip
   "soc analyst", "soc engineer", "soc operations", "soc specialist", "soc tier", "security operations",
   "mdr", "siem", "gsoc",
