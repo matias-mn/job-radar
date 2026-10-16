@@ -1,6 +1,6 @@
 # job-radar
 
-Pulls new security job postings from public job boards (Greenhouse, Lever, Ashby, Workday), Activision Blizzard's career site, and GameJobs.co, filters them, scores each one against my resume with an LLM (OpenAI by default, Claude optional), and posts the best matches to Slack. It checks every 15 minutes on my Mac and alerts on each match as soon as it's scored.
+Pulls new security job postings from public job boards (Greenhouse, Lever, Ashby, Workday), Activision Blizzard's career site, GameJobs.co, and LinkedIn and Indeed job-alert emails, filters them, scores each one against my resume with an LLM (OpenAI by default, Claude optional), and posts the best matches to Slack. It checks every 15 minutes on my Mac and alerts on each match as soon as it's scored.
 
 ```
 70 job boards ──▶ filters ──▶ LLM scores fit ───▶ SQLite ──▶ Slack, one message per match
@@ -35,6 +35,14 @@ Use a **personal** key, not a work one. Each call sends your resume and shows yo
 3. Copy the URL into `.env` as `SLACK_WEBHOOK_URL=...`.
 4. `.venv/bin/python -m job_radar test-slack` should post a sample message.
 
+### 3. Job-alert emails (optional)
+LinkedIn and Indeed job alerts cover companies whose career sites can't be polled (Google, Meta, TikTok, …).
+1. Make a dedicated Gmail, turn on 2-Step Verification, and create an app password at https://myaccount.google.com/apppasswords.
+2. Put both in `.env` as `ALERT_EMAIL=...` and `ALERT_EMAIL_APP_PASSWORD=...`.
+3. In the Gmail that gets your alerts, add filters on `from:jobalerts-noreply@linkedin.com` and `from:donotreply@jobalert.indeed.com` that forward to the dedicated address.
+
+job-radar reads that inbox over IMAP (read-only; emails stay unread) and only opens emails from the senders in `email_alerts.SENDERS`.
+
 ## Usage
 
 ```bash
@@ -58,6 +66,7 @@ Use a **personal** key, not a work one. Each call sends your resume and shows yo
   - `phenom`: Activision Blizzard's career site. Full descriptions come from its Workday postings.
   - `gamejobs`: GameJobs.co searches. Entries are queries, not companies. Each job's page gives its location, description and application link. Jobs it re-lists from boards above are skipped, matched by that link or by company + title.
   - Neither sends ETags, so each check re-downloads about 0.4 MB.
+  - `email`: job-alert emails in `ALERT_EMAIL`. Entries are senders: `"linkedin"`, `"indeed"`. Each board remembers the last email it read; the first check reads the last 15 days. Emails don't include descriptions, so job-radar looks for the same title on the company's Greenhouse, Lever or Ashby board (guessing the slug from the company name). Found: full description, and the alert links to the company's posting. Not found (most big companies): it's scored on title, company, location and (Indeed only) the one-line snippet, and the alert is tagged `📧 LinkedIn alert · limited info` or `📧 Indeed alert · limited info`. LinkedIn's and Indeed's own pages are never fetched. When a job turns up on a board config.toml doesn't poll, the log suggests adding it.
 - **Companies:** add a board slug under `greenhouse`, `lever` or `ashby`. The slug is in the careers URL, e.g. `job-boards.greenhouse.io/<slug>`. Run `check-companies` after editing.
 - **Filters:** `title_include`, `title_exclude`, `bay_area`, `us_markers`, `non_us_markers`.
 - **Thresholds:** `alert_threshold`, `max_age_days`, `max_llm_calls_per_run` (cost cap).

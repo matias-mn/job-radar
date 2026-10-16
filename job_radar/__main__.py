@@ -26,7 +26,7 @@ from . import filters, notify
 from .db import DB
 from .resume import load_resume
 from .scorer import RateLimited, make_scorer
-from .sources import fetch_all, hydrate_all, is_duplicate, title_index
+from .sources import fetch_all, hydrate_all, is_duplicate, origin_board, title_index
 
 ROOT = Path(__file__).resolve().parent.parent
 log = logging.getLogger("job_radar")
@@ -93,9 +93,9 @@ def cmd_run(cfg: dict, dry_run: bool, full: bool) -> int:
 
     # Boards with huge full-description payloads (e.g. OpenAI's ~14 MB Ashby board) change
     # nearly every check, so ETags don't help; download those at most once per interval.
-    skip = set() if full else db.throttled_boards(
+    skip = set() if full else {b for b in db.throttled_boards(
         int(s.get("big_board_mb", 5) * 1e6), s.get("big_board_interval_minutes", 60)
-    )
+    ) if not b.startswith("email:")}  # a big batch of emails is a one-off, not a big board
     fetched = asyncio.run(fetch_all(cfg["companies"], db.etags(), skip))
     db.save_board_sizes(fetched.board_bytes)
     kept, counts = filters.apply(fetched.jobs, flt, s["max_age_days"])
@@ -108,6 +108,8 @@ def cmd_run(cfg: dict, dry_run: bool, full: bool) -> int:
     seen = known | {j.key for j in fetched.jobs}
     titles = title_index(db.titles() + [(j.source, j.company, j.title) for j in fetched.jobs])
     late_drop = [j for j in new if is_duplicate(j, polled, seen, titles) or not flt.location_ok(j)]
+    for board in sorted({o[0] for j in new if j.source in ("linkedin", "indeed") and (o := origin_board(j.apply_url))} - polled):
+        log.info("Email alert job found on %s, which config.toml doesn't poll yet; consider adding it", board)
     new = [j for j in new if j not in late_drop]
     db.upsert_jobs(new)
     db.upsert_jobs(late_drop, status="filtered")

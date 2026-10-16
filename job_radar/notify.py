@@ -4,6 +4,10 @@ from datetime import datetime
 
 import httpx
 
+from .models import LIMITED_INFO
+
+EMAIL_SOURCES = {"linkedin": "LinkedIn", "indeed": "Indeed"}
+
 
 def _esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -25,6 +29,9 @@ def _tags(r: dict) -> str:
     tags = [r.get("category") or "uncategorized", _posted(r.get("posted_at"))]
     if r.get("shift_or_oncall"):
         tags.append("shift/on-call")
+    if r.get("source") in EMAIL_SOURCES:
+        limited = (r.get("description") or "").startswith(LIMITED_INFO)
+        tags.append(f"📧 {EMAIL_SOURCES[r['source']]} alert" + (" · limited info" if limited else ""))
     return " · ".join(tags)
 
 

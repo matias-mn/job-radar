@@ -11,7 +11,7 @@ import pytest
 
 from job_radar import filters, notify
 from job_radar.db import DB
-from job_radar.models import FitScore, Job
+from job_radar.models import LIMITED_INFO, FitScore, Job
 from job_radar.resume import load_resume
 from job_radar.scorer import AnthropicScorer, OpenAIScorer, Usage, make_scorer
 from job_radar.sources import (Fetched, ashby, fetch_all, gamejobs, greenhouse, html_to_text, hydrate_all,
@@ -526,3 +526,209 @@ def test_big_boards_are_throttled(tmp_path):
     db.save_board_sizes({"ashby:openai": 14_000_000})
     db.clear_etags()
     assert db.etags() == {} and db.throttled_boards(5_000_000, 60) == {"ashby:openai"}
+
+
+# ---- email alerts (LinkedIn) ----
+
+def linkedin_email():
+    import email
+    from email import policy
+    return email.message_from_bytes((FIXTURES / "linkedin_alert.eml").read_bytes(), policy=policy.default)
+
+
+def test_linkedin_parse_email():
+    from job_radar.sources import linkedin
+    jobs = linkedin.parse_email(linkedin_email())
+    assert [j.company for j in jobs] == ["Acme Robotics", "Globex", "Initech", "Hooli", "Umbrella Labs", "Pied Piper"]
+    acme, globex, _, hooli, umbrella, _ = jobs
+    assert acme.key == "linkedin:Acme Robotics:1000000001" and acme.title == "Security Engineer"
+    assert acme.location == "United States (Remote)" and acme.remote
+    assert globex.title == "Detection & Response Engineer"
+    assert globex.location == "Foster City, CA (Hybrid)" and not globex.remote
+    assert globex.comp == "$130K-$160K / year" and umbrella.comp is None
+    assert hooli.location == "Palo Alto, CA" and not hooli.remote  # no workplace type given
+    assert acme.url == "https://www.linkedin.com/jobs/view/1000000001/"  # no tracking tokens
+    assert acme.posted_at.date().isoformat() == "2026-10-12" and acme.description == ""
+
+
+def test_linkedin_jobs_pass_filters(flt):
+    from job_radar.sources import linkedin
+    jobs = linkedin.parse_email(linkedin_email())
+    kept, _ = filters.apply(jobs, flt, 15, now=datetime(2026, 10, 13, tzinfo=timezone.utc))
+    assert {j.company for j in kept} == {"Acme Robotics", "Globex", "Initech", "Hooli", "Umbrella Labs", "Pied Piper"}
+
+
+class FakeIMAP:
+    def __init__(self, messages, validity="1"):
+        self.messages, self.validity, self.searches = messages, validity, []
+
+    def select(self, mailbox, readonly):
+        assert readonly
+        return "OK", [b"%d" % len(self.messages)]
+
+    def response(self, code):
+        return code, [self.validity.encode()]
+
+    def uid(self, command, *args):
+        if command == "SEARCH":
+            self.searches.append(args[1:])
+            if "UID" in args:
+                low = int(args[args.index("UID") + 1].split(":")[0])
+                hits = [u for u in self.messages if u >= low] or [max(self.messages)]  # IMAP quirk for "N:*"
+            else:
+                hits = list(self.messages)
+            return "OK", [" ".join(map(str, hits)).encode()]
+        return "OK", [(b"BODY[]", self.messages[int(args[0])]), b")"]
+
+    def logout(self):
+        pass
+
+
+def test_email_fetch_remembers_last_uid(monkeypatch):
+    from job_radar.sources import email_alerts
+    raw = (FIXTURES / "linkedin_alert.eml").read_bytes()
+    imap = FakeIMAP({5: raw})
+    monkeypatch.setattr(email_alerts, "_connect", lambda: imap)
+
+    jobs, etag = asyncio.run(email_alerts.fetch(None, "linkedin", None, Fetched()))
+    assert len(jobs) == 6 and json.loads(etag) == {"validity": "1", "uid": 5}
+    assert "SINCE" in imap.searches[0]  # first run: recent mail only
+
+    assert asyncio.run(email_alerts.fetch(None, "linkedin", etag, Fetched())) == (None, etag)
+    assert imap.searches[1][-2:] == ("UID", "6:*")
+
+    imap.messages[9] = raw
+    jobs, etag = asyncio.run(email_alerts.fetch(None, "linkedin", etag, Fetched()))
+    assert len(jobs) == 6 and json.loads(etag)["uid"] == 9
+
+    imap.validity = "2"  # mailbox rebuilt: UIDs mean something else now, start over
+    asyncio.run(email_alerts.fetch(None, "linkedin", etag, Fetched()))
+    assert "SINCE" in imap.searches[-1]
+
+
+def test_email_fetch_needs_credentials(monkeypatch):
+    from job_radar.sources import email_alerts
+    monkeypatch.delenv("ALERT_EMAIL", raising=False)
+    with pytest.raises(ValueError, match="ALERT_EMAIL"):
+        asyncio.run(email_alerts.fetch(None, "linkedin", None, Fetched()))
+
+
+def test_slug_guesses():
+    from job_radar.sources.resolve import slug_guesses
+    assert slug_guesses("Duck Creek Technologies") == [
+        "duckcreektechnologies", "duck-creek-technologies", "duckcreek", "duck"]
+    assert slug_guesses("Amazon Web Services (AWS)")[0] == "amazonwebservices"
+    assert slug_guesses("23andMe") == ["23andme"]
+
+
+def _resolve(job, routes):
+    from job_radar.sources import resolve
+    calls = []
+
+    def handler(req):
+        calls.append(str(req.url))
+        for prefix, body in routes.items():
+            if str(req.url).startswith(prefix):
+                return httpx.Response(200, json=body)
+        return httpx.Response(404)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await resolve.hydrate(client, job)
+
+    asyncio.run(run())
+    return calls
+
+
+def linkedin_job(title="Security Engineer", company="Etched"):
+    return Job("linkedin", company, "42", title, "San Jose, CA (On-site)", False,
+               "https://www.linkedin.com/jobs/view/42/", NOW, "", comp="$150K-$330K / year")
+
+
+def test_resolve_finds_posting_on_company_board():
+    data = fixture("ashby.json")
+    listed = next(j for j in data["jobs"] if j.get("isListed", True))
+    job = linkedin_job(title=listed["title"])
+    calls = _resolve(job, {"https://api.ashbyhq.com/posting-api/job-board/etched": data})
+    assert job.description and job.description != LIMITED_INFO
+    assert job.apply_url == f"https://jobs.ashbyhq.com/etched/{listed['id']}"
+    assert job.url == listed["jobUrl"]
+    assert job.comp == "$150K-$330K / year"  # the email's pay is kept
+    assert is_duplicate(job, {"ashby:etched"}, set())  # we already poll that board
+    assert not is_duplicate(job, {"greenhouse:other"}, set())
+    assert len(calls) == 3  # greenhouse, lever, then ashby hit
+
+
+def test_resolve_hydrates_greenhouse_match():
+    detail = fixture("greenhouse.json")["jobs"][0]
+    light = {"jobs": [{k: v for k, v in detail.items() if k != "content"}]}
+    job = linkedin_job(title=detail["title"], company="Acme")
+    _resolve(job, {"https://boards-api.greenhouse.io/v1/boards/acme/jobs/111": detail,
+                   "https://boards-api.greenhouse.io/v1/boards/acme/jobs": light})
+    assert "hunt threats" in job.description
+    assert job.apply_url == "https://boards.greenhouse.io/acme/jobs/111"
+
+
+def test_resolve_falls_back_to_limited_info():
+    job = linkedin_job(company="Nobody Inc")
+    calls = _resolve(job, {})
+    assert job.description == LIMITED_INFO and job.apply_url == ""
+    assert job.url == "https://www.linkedin.com/jobs/view/42/"
+    assert len(calls) == 9  # 3 slug guesses x 3 boards, all 404
+
+
+def test_gaming_matches_company_names_from_emails():
+    is_gaming = filters.Gaming({"companies": ["riotgames", "sonyinteractiveentertainmentglobal", "niantic-spatial", "2k"]})
+    assert is_gaming("linkedin", "Riot Games")
+    assert is_gaming("linkedin", "Sony Interactive Entertainment")
+    assert is_gaming("linkedin", "Niantic Spatial")
+    assert not is_gaming("linkedin", "Google")
+    assert not is_gaming("linkedin", "2")  # too short to match on a prefix
+
+
+def test_slack_tags_linkedin_limited_info():
+    row = {"key": "k", "title": "Security Engineer", "company": "Etched", "location": "San Jose, CA", "remote": 0,
+           "url": "https://x", "comp": None, "fit_score": 72, "why": "w", "source": "linkedin",
+           "description": LIMITED_INFO, "matched_skills": [], "missing_skills": [], "red_flags": []}
+    assert "📧 LinkedIn alert · limited info" in notify.build_digest([row])["blocks"][1]["text"]["text"]
+    row["description"] = "full posting"
+    section = notify.build_digest([row])["blocks"][1]["text"]["text"]
+    assert "📧 LinkedIn alert" in section and "limited info" not in section
+
+
+# ---- email alerts (Indeed) ----
+
+def test_indeed_parse_email():
+    import email
+    from email import policy
+    from job_radar.sources import indeed
+    msg = email.message_from_bytes((FIXTURES / "indeed_alert.eml").read_bytes(), policy=policy.default)
+    jobs = indeed.parse_email(msg)
+    assert len(jobs) == 8
+    initech, _, _, umbrella, acme = jobs[:5]
+    assert initech.key == "indeed:Initech:5fa85475740879fa"
+    assert initech.title == "Cybersecurity Analyst in Santa Clara, CA" and initech.location == "Santa Clara, CA"
+    assert initech.comp == "$72,000 - $96,000 a year" and "security events" in initech.teaser
+    assert initech.url == "https://www.indeed.com/viewjob?jk=5fa85475740879fa"  # no personal tokens
+    assert initech.posted_at.date().isoformat() == "2026-10-16"  # "Just posted"
+    assert umbrella.comp is None and "Easily apply" not in umbrella.teaser
+    assert acme.company == "Acme Robotics" and acme.location == "Sunnyvale, CA"
+    assert jobs[6].company == "Soylent Memory Solutions America Inc."
+
+
+def test_indeed_block_age_and_remote():
+    from job_radar.sources import indeed
+    lines = ["SOC Analyst", "Acme - Remote", "Monitor alerts.", "3 days ago", "https://www.indeed.com/rc/clk/dl?jk=abc123&x=1"]
+    job = indeed.parse_block(lines, NOW)
+    assert job.remote and job.posted_at == NOW.replace(day=2)
+    assert indeed.parse_block(["See all", "https://www.indeed.com/jobs?q=x"], NOW) is None
+
+
+def test_limited_info_keeps_indeed_snippet():
+    job = Job("indeed", "Nobody Inc", "abc", "SOC Analyst", "San Jose, CA", False, "u", NOW, "", teaser="Monitor SIEM alerts.")
+    _resolve(job, {})
+    assert job.description.startswith(LIMITED_INFO) and job.description.endswith("Monitor SIEM alerts.")
+    row = {"key": "k", "title": "SOC Analyst", "company": "Nobody Inc", "location": "San Jose, CA", "remote": 0,
+           "url": "u", "comp": None, "fit_score": 72, "why": "w", "source": "indeed", "description": job.description,
+           "matched_skills": [], "missing_skills": [], "red_flags": []}
+    assert "📧 Indeed alert · limited info" in notify.build_digest([row])["blocks"][1]["text"]["text"]

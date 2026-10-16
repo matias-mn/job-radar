@@ -28,6 +28,8 @@ workday = ["crowdstrike.wd5/crowdstrikecareers", "nvidia.wd5/NVIDIAExternalCaree
 phenom = ["activisionblizzard"]
 # GameJobs.co searches (queries, not companies). Jobs it re-lists from boards above are skipped.
 gamejobs = ["security", "anti-cheat", "threat", "detection", "incident response", "fraud"]
+# Job-alert emails forwarded to ALERT_EMAIL (see .env). Entries are senders: "linkedin", "indeed".
+email = ["linkedin", "indeed"]
 lever = ["palantir", "xsolla"]
 ashby = ["snyk", "1password", "hackerone", "openai"]
 

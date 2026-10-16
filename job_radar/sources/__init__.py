@@ -76,9 +76,14 @@ async def get_json(client: httpx.AsyncClient, url: str, etag: str | None, stats:
     return r.json(), r.headers.get("etag")
 
 
+def _norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
 # Imported after the helpers above, which the source modules use.
 from . import workday  # noqa: E402
 from . import ashby, gamejobs, greenhouse, lever, phenom  # noqa: E402
+from . import email_alerts, resolve  # noqa: E402
 
 FETCHERS = {
     "greenhouse": greenhouse.fetch,
@@ -87,14 +92,17 @@ FETCHERS = {
     "phenom": phenom.fetch,
     "gamejobs": gamejobs.fetch,
     "workday": workday.fetch,
+    "email": email_alerts.fetch,  # job-alert emails; jobs get source = the sender ("linkedin", "indeed")
 }
-AGGREGATORS = {"gamejobs"}  # multi-company sources that may re-list jobs from boards we poll
+AGGREGATORS = {"gamejobs", "linkedin", "indeed"}  # multi-company sources that may re-list jobs from boards we poll
 # Sources whose listing omits the description (and, for gamejobs, the location).
 HYDRATORS = {
     "greenhouse": greenhouse.hydrate,
     "phenom": phenom.hydrate,
     "gamejobs": gamejobs.hydrate,
     "workday": workday.hydrate,
+    "linkedin": resolve.hydrate,
+    "indeed": resolve.hydrate,
 }
 
 # Application links on boards we can poll directly -> that board's job key.
@@ -103,10 +111,6 @@ _ORIGIN_RES = [
     ("lever", re.compile(r"jobs\.lever\.co/([\w.-]+)/([0-9a-f-]{36})")),
     ("ashby", re.compile(r"jobs\.ashbyhq\.com/([\w.-]+)/([0-9a-f-]{36})")),
 ]
-
-
-def _norm(text: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
 def title_index(jobs) -> dict[str, set[str]]:
@@ -118,13 +122,20 @@ def title_index(jobs) -> dict[str, set[str]]:
     return index
 
 
+def origin_board(url: str) -> tuple[str, str] | None:
+    """('greenhouse:acme', 'greenhouse:acme:123') for a link to a board we know how to poll."""
+    for source, pattern in _ORIGIN_RES:
+        if m := pattern.search(url or ""):
+            return f"{source}:{m[1]}", f"{source}:{m[1]}:{m[2]}"
+    return None
+
+
 def is_duplicate(job: Job, polled_boards: set[str], seen_keys: set[str], titles: dict[str, set[str]] | None = None) -> bool:
     """True if an aggregator job is a posting we already get from the company's own board."""
     if job.source not in AGGREGATORS:
         return False
-    for source, pattern in _ORIGIN_RES:
-        if m := pattern.search(job.apply_url):
-            return f"{source}:{m[1]}" in polled_boards or f"{source}:{m[1]}:{m[2]}" in seen_keys
+    if origin := origin_board(job.apply_url):
+        return origin[0] in polled_boards or origin[1] in seen_keys
     if (req := workday.req_id(job.apply_url)) and any(
         k.startswith("phenom:") and k.endswith(f":{req}") for k in seen_keys
     ):

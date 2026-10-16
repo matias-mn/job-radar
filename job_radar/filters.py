@@ -33,12 +33,18 @@ class Gaming:
     def __init__(self, cfg: dict | None):
         cfg = cfg or {}
         self.companies = set(cfg.get("companies", []))
+        self._slugs = {re.sub(r"[^a-z0-9]", "", c.lower()) for c in self.companies}
         self.sources = set(cfg.get("sources", []))
         self.alert_threshold = cfg.get("alert_threshold")
         self.any_us_location = cfg.get("any_us_location", False)
 
     def __call__(self, source: str, company: str) -> bool:
-        return company in self.companies or source in self.sources
+        if company in self.companies or source in self.sources:
+            return True
+        # Email alerts give a company name, not a board slug: "Riot Games" ~ riotgames,
+        # "Sony Interactive Entertainment" ~ sonyinteractiveentertainmentglobal.
+        name = re.sub(r"[^a-z0-9]", "", company.lower())
+        return len(name) >= 4 and any(slug.startswith(name) for slug in self._slugs)
 
 
 class Filters:

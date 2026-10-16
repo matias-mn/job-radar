@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field
 
 @dataclass
 class Job:
-    source: str  # greenhouse | lever | ashby
-    company: str  # board slug
+    source: str  # greenhouse | lever | ashby | workday | phenom | gamejobs | linkedin
+    company: str  # board slug (company name for aggregators)
     ext_id: str
     title: str
     location: str | None  # None = unknown until the job is hydrated
@@ -26,6 +26,13 @@ class Job:
     def key(self) -> str:
         return f"{self.source}:{self.company}:{self.ext_id}"
 
+
+# Description stored for an email-alert job whose full posting couldn't be found.
+LIMITED_INFO = (
+    "No job description available. This job came from a job-alert email, which only gives the title, "
+    "company, location and sometimes pay, and the posting wasn't found on a public job board. "
+    "Score it from those details and keep skill lists to what the title clearly implies."
+)
 
 CATEGORIES = (
     "SOC / Security Operations", "Detection & Response", "Incident Response", "Security Engineering",
