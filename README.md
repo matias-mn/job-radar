@@ -34,6 +34,8 @@ Use a **personal** key, not a work one. Each call sends your resume and shows yo
 2. **Incoming Webhooks** → turn it on → **Add New Webhook to Workspace** → pick a channel (e.g. `#job-radar`).
 3. Copy the URL into `.env` as `SLACK_WEBHOOK_URL=...`.
 4. `.venv/bin/python -m job_radar test-slack` should post a sample message.
+5. Optional, to get each posting's minimum/preferred qualifications as a **thread reply** under its alert (a webhook can't reply in a thread, so without this they're appended to the alert):
+   **OAuth & Permissions** → Bot Token Scopes → add `chat:write` → **Reinstall to Workspace** → copy the Bot User OAuth Token into `.env` as `SLACK_BOT_TOKEN=xoxb-...`. In Slack, run `/invite @<app name>` in the channel, and copy the channel ID (channel name → **About**, at the bottom) into `.env` as `SLACK_CHANNEL=C...`. When both are set, job-radar posts through the bot instead of the webhook. Run `test-slack` again to check the thread.
 
 ### 3. Job-alert emails (optional)
 LinkedIn and Indeed job alerts cover companies whose career sites can't be polled (Google, Meta, TikTok, …).
@@ -51,10 +53,13 @@ job-radar reads that inbox over IMAP (read-only; emails stay unread) and only op
 .venv/bin/python -m job_radar run --full        # ignore ETags, re-check every board
 .venv/bin/python -m job_radar check-companies   # verify every board in config.toml
 .venv/bin/python -m job_radar stats             # totals + estimated API spend
+.venv/bin/python -m job_radar rehydrate         # re-read LinkedIn jobs stored without a description, re-score them
 ```
 
 - Each job is scored **once**. Re-running only scores postings it hasn't seen.
-- Each job is alerted **once**, as its own Slack message, right after it's scored (max 10 per run).
+- Each job is alerted **once**, as its own Slack message, right after it's scored (max 10 per run). The posting's minimum and preferred qualifications (pulled out by the scorer) go in a thread reply, or at the bottom of the alert without a bot token.
+- A score with a `?` (e.g. `72?`) was a guess: the job had no description (an alert email whose posting couldn't be found), so it was scored on title, company and location only, and capped at `limited_info_max_score`.
+- If LinkedIn starts refusing its job pages, Slack gets a one-time ⚠️ notice that LinkedIn alerts are being scored from the email alone, and a ✅ notice once full postings are back.
 - Changing `[filters]`, `[companies]` or `max_age_days` automatically triggers a full re-check on the next run.
 - A job that fails to score (API or network error) is retried on the next run.
 
@@ -66,7 +71,7 @@ job-radar reads that inbox over IMAP (read-only; emails stay unread) and only op
   - `phenom`: Activision Blizzard's career site. Full descriptions come from its Workday postings.
   - `gamejobs`: GameJobs.co searches. Entries are queries, not companies. Each job's page gives its location, description and application link. Jobs it re-lists from boards above are skipped, matched by that link or by company + title.
   - Neither sends ETags, so each check re-downloads about 0.4 MB.
-  - `email`: job-alert emails in `ALERT_EMAIL`. Entries are senders: `"linkedin"`, `"indeed"`. Each board remembers the last email it read; the first check reads the last 15 days. Emails don't include descriptions, so job-radar looks for the same title on the company's Greenhouse, Lever or Ashby board (guessing the slug from the company name). Found: full description, and the alert links to the company's posting. Not found (most big companies): it's scored on title, company, location and (Indeed only) the one-line snippet, and the alert is tagged `📧 LinkedIn alert · limited info` or `📧 Indeed alert · limited info`. LinkedIn's and Indeed's own pages are never fetched. When a job turns up on a board config.toml doesn't poll, the log suggests adding it.
+  - `email`: job-alert emails in `ALERT_EMAIL`. Entries are senders: `"linkedin"`, `"indeed"`. Each board remembers the last email it read; the first check reads the last 15 days. Emails don't include descriptions, so job-radar looks for the same title on the company's Greenhouse, Lever or Ashby board (guessing the slug from the company name). Found: full description, and the alert links to the company's posting. Not found (most big companies): a LinkedIn job takes its description from LinkedIn's public job page (no login), headed by LinkedIn's seniority level, which is what catches "Security Engineer" postings that want 8+ years. Those pages are read one at a time, 3 seconds apart. LinkedIn sometimes answers 429 anyway, so a refusal is retried after 15 s, then 30 s, and after three in a row LinkedIn's pages are skipped for the rest of the run. An Indeed job that LinkedIn also sent (same title and company) is dropped as a duplicate, since Indeed's pages block scripts. Anything still without a description is scored on title, company, location and (Indeed only) the one-line snippet, capped at `limited_info_max_score`, and the alert is tagged `📧 LinkedIn alert · limited info` or `📧 Indeed alert · limited info`. `python -m job_radar rehydrate` re-reads LinkedIn jobs stored without a description and re-scores them. When a job turns up on a board config.toml doesn't poll, the log suggests adding it.
 - **Companies:** add a board slug under `greenhouse`, `lever` or `ashby`. The slug is in the careers URL, e.g. `job-boards.greenhouse.io/<slug>`. Run `check-companies` after editing.
 - **Filters:** `title_include`, `title_exclude`, `bay_area`, `us_markers`, `non_us_markers`.
 - **Thresholds:** `alert_threshold`, `max_age_days`, `max_llm_calls_per_run` (cost cap).

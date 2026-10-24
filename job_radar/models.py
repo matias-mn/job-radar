@@ -58,3 +58,11 @@ class FitScore(BaseModel):
     )
     shift_or_oncall: bool = Field(description="True if the role mentions shift work, 24/7 coverage, or on-call rotation.")
     why: str = Field(description="1-2 sentences explaining the score, written to the candidate.")
+    min_qualifications: list[str] = Field(
+        description="The posting's minimum / required / basic qualifications, one per item, in the posting's own words. "
+        "Empty if the posting doesn't list them."
+    )
+    preferred_qualifications: list[str] = Field(
+        description="The posting's preferred / nice-to-have qualifications, one per item, in the posting's own words. "
+        "Empty if the posting doesn't list them."
+    )

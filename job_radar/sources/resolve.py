@@ -4,8 +4,10 @@ Alert emails only give title, company and location. This guesses the company's
 Greenhouse, Lever and Ashby board slugs from its name ("Duck Creek Technologies" ->
 duckcreektechnologies, duck-creek-technologies, duckcreek) and looks for the same title.
 A match gives a full description and an application link on the company's board,
-which also lets is_duplicate() drop jobs from boards we already poll. No match: the
-job is scored on what the email said, flagged as limited.
+which also lets is_duplicate() drop jobs from boards we already poll. No match: a
+LinkedIn job takes its description from LinkedIn's public job page instead
+(linkedin.fetch_description); Indeed's pages block scripts. Still nothing: the job is
+scored on what the email said, flagged as limited.
 """
 
 import asyncio
@@ -16,7 +18,7 @@ import weakref
 import httpx
 
 from ..models import LIMITED_INFO, Job
-from . import Fetched, _norm, ashby, greenhouse, lever
+from . import Fetched, _norm, ashby, greenhouse, lever, linkedin
 
 log = logging.getLogger(__name__)
 
@@ -84,11 +86,17 @@ async def hydrate(client: httpx.AsyncClient, job: Job) -> None:
     except httpx.HTTPError as e:
         log.info("couldn't look up %s at %s: %s", job.title, job.company, e)
         found = None
-    if not found or not found.description:
-        job.description = LIMITED_INFO + (f"\n\nSnippet from the alert: {job.teaser}" if job.teaser else "")
+    if found and found.description:
+        job.description = found.description
+        job.apply_url = CANONICAL[found.source].format(slug=found.company, id=found.ext_id)
+        job.url = found.url or job.apply_url  # apply on the company's site, not through LinkedIn
+        job.comp = job.comp or found.comp
+        job.posted_at = found.posted_at or job.posted_at
         return
-    job.description = found.description
-    job.apply_url = CANONICAL[found.source].format(slug=found.company, id=found.ext_id)
-    job.url = found.url or job.apply_url  # apply on the company's site, not through LinkedIn
-    job.comp = job.comp or found.comp
-    job.posted_at = found.posted_at or job.posted_at
+    if job.source == "linkedin":
+        try:
+            job.description = await linkedin.fetch_description(client, job.ext_id)
+        except httpx.HTTPError as e:
+            log.info("couldn't read LinkedIn's page for %s: %s", job.key, e)
+    if not job.description:
+        job.description = LIMITED_INFO + (f"\n\nSnippet from the alert: {job.teaser}" if job.teaser else "")

@@ -113,13 +113,19 @@ _ORIGIN_RES = [
 ]
 
 
-def title_index(jobs) -> dict[str, set[str]]:
-    """normalized title -> normalized company slugs, for jobs from boards we poll directly."""
+def title_index(jobs, source: str | None = None) -> dict[str, set[str]]:
+    """normalized title -> normalized company slugs, for jobs from boards we poll directly (or from `source`)."""
     index: dict[str, set[str]] = {}
-    for source, company, title in jobs:
-        if source not in AGGREGATORS:
+    for src, company, title in jobs:
+        if src == source if source else src not in AGGREGATORS:
             index.setdefault(_norm(title), set()).add(_norm(company))
     return index
+
+
+def _same_company(company: str, slugs) -> bool:
+    """Names match slugs by prefix: "Roblox" ~ roblox, "Rockstar" ~ rockstargames, "THINK Surgical, Inc." ~ thinksurgical."""
+    name = _norm(company)
+    return len(name) >= 3 and any(slug.startswith(name) or name.startswith(slug) for slug in slugs)
 
 
 def origin_board(url: str) -> tuple[str, str] | None:
@@ -130,22 +136,21 @@ def origin_board(url: str) -> tuple[str, str] | None:
     return None
 
 
-def is_duplicate(job: Job, polled_boards: set[str], seen_keys: set[str], titles: dict[str, set[str]] | None = None) -> bool:
-    """True if an aggregator job is a posting we already get from the company's own board."""
+def is_duplicate(job: Job, polled_boards: set[str], seen_keys: set[str], titles: dict[str, set[str]] | None = None,
+                 linkedin_titles: dict[str, set[str]] | None = None) -> bool:
+    """True if an aggregator job is a posting we already get from the company's own board, or (Indeed) from LinkedIn."""
     if job.source not in AGGREGATORS:
         return False
+    if job.source == "indeed" and _same_company(job.company, (linkedin_titles or {}).get(_norm(job.title), ())):
+        return True  # LinkedIn's copy can get the full description; Indeed's can't
     if origin := origin_board(job.apply_url):
         return origin[0] in polled_boards or origin[1] in seen_keys
     if (req := workday.req_id(job.apply_url)) and any(
         k.startswith("phenom:") and k.endswith(f":{req}") for k in seen_keys
     ):
         return True
-    # No usable link: same title at a company whose name matches a polled board's slug
-    # ("Roblox" ~ roblox, "Rockstar" ~ rockstargames, "Take-Two Interactive" ~ taketwo).
-    name = _norm(job.company)
-    return len(name) >= 3 and any(
-        slug.startswith(name) or name.startswith(slug) for slug in (titles or {}).get(_norm(job.title), ())
-    )
+    # No usable link: same title at a company whose name matches a polled board's slug.
+    return _same_company(job.company, (titles or {}).get(_norm(job.title), ()))
 
 
 def _client() -> httpx.AsyncClient:

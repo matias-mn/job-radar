@@ -9,6 +9,7 @@ effort = "low"                      # reasoning effort; low is plenty for fit sc
 max_age_days = 15                   # ignore postings older than this
 max_llm_calls_per_run = 40          # cost cap per run
 alert_threshold = 70                # min fit_score to alert on
+limited_info_max_score = 75         # cap for email-alert jobs scored without a description (title only)
 big_board_mb = 5                    # boards whose download is at least this big...
 big_board_interval_minutes = 60     # ...are checked at most this often (OpenAI, Palantir)
 max_alerts_per_run = 10             # each match is its own Slack message, sent as soon as it's scored

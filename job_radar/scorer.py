@@ -37,8 +37,12 @@ Years of experience asked for matter most: treat internship + lab work as roughl
 Explicit "new grad" or "early career" is a strong positive. Be skeptical: a high score should mean \
 "they're competitive for this today".
 
-Base matched_skills only on what the resume actually shows. Keep every list item short (2-5 words) \
-and list at most 6 items per list.
+Base matched_skills only on what the resume actually shows. Keep every item in matched_skills, \
+missing_skills and red_flags short (2-5 words), at most 6 items per list.
+
+Copy min_qualifications and preferred_qualifications from the posting itself (headings like "Minimum", \
+"Required", "Basic", "Preferred", "Nice to have"), lightly trimmed, at most 12 items each. Never invent \
+them: if the posting has no such list, or there's no description, leave the list empty.
 
 ## Resume
 <resume>

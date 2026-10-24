@@ -1,6 +1,7 @@
 """job-radar CLI.
 
     python -m job_radar run [--dry-run] [--full]   fetch changed boards, filter, score, alert
+    python -m job_radar rehydrate         re-read LinkedIn jobs stored without a description, re-score them
     python -m job_radar check-companies   verify every board slug in config.toml
     python -m job_radar test-slack        post a sample digest to the webhook
     python -m job_radar stats             totals and estimated API spend
@@ -24,9 +25,10 @@ from dotenv import load_dotenv
 
 from . import filters, notify
 from .db import DB
+from .models import LIMITED_INFO
 from .resume import load_resume
 from .scorer import RateLimited, make_scorer
-from .sources import fetch_all, hydrate_all, is_duplicate, origin_board, title_index
+from .sources import fetch_all, hydrate_all, is_duplicate, linkedin, origin_board, title_index
 
 ROOT = Path(__file__).resolve().parent.parent
 log = logging.getLogger("job_radar")
@@ -35,6 +37,44 @@ log = logging.getLogger("job_radar")
 def load_config() -> dict:
     with open(ROOT / "config.toml", "rb") as f:
         return tomllib.load(f)
+
+
+LINKEDIN_NOTICES = {
+    "email_only": "⚠️ LinkedIn is refusing to show job pages, so LinkedIn alerts are now scored from the email alone "
+                  "(title, company, location). Those scores show a `?`. I'll post again when full postings are back.",
+    "full": "✅ LinkedIn job pages are back: LinkedIn alerts are scored from the full posting again.",
+}
+NO_SLACK = "Slack isn't set up: put SLACK_WEBHOOK_URL, or SLACK_BOT_TOKEN and SLACK_CHANNEL, in .env"
+
+
+class Slack:
+    """A bot token (can thread replies) when SLACK_BOT_TOKEN and SLACK_CHANNEL are set, else the webhook."""
+
+    def __init__(self):
+        token, channel = os.environ.get("SLACK_BOT_TOKEN"), os.environ.get("SLACK_CHANNEL")
+        self.bot = (token, channel) if token and channel else None
+        self.webhook = os.environ.get("SLACK_WEBHOOK_URL")
+
+    def __bool__(self) -> bool:
+        return bool(self.bot or self.webhook)
+
+    def alert(self, row: dict) -> None:
+        """Raises httpx.HTTPError if the alert itself didn't go out."""
+        if not self.bot:
+            notify.post(self.webhook, notify.build_digest([row], with_qualifications=True))
+            return
+        ts = notify.post_bot(*self.bot, notify.build_digest([row]))
+        if quals := notify.build_qualifications(row):
+            try:
+                notify.post_bot(*self.bot, quals, thread_ts=ts)
+            except httpx.HTTPError as e:  # the alert went out; don't resend it over this
+                log.error("couldn't post qualifications for %s: %s", row["key"], e)
+
+    def message(self, text: str) -> None:
+        if self.bot:
+            notify.post_bot(*self.bot, {"text": text})
+        else:
+            notify.post(self.webhook, {"text": text})
 
 
 class Alerter:
@@ -46,7 +86,7 @@ class Alerter:
         self.budget = cfg["settings"]["max_alerts_per_run"]
         self.gaming = filters.Gaming(cfg.get("gaming"))
         self.gaming_threshold = self.gaming.alert_threshold or self.threshold
-        self.webhook = os.environ.get("SLACK_WEBHOOK_URL")
+        self.slack = Slack()
         self.sent = 0
         self.printed: dict[str, dict] = {}
         self.broken = False
@@ -58,13 +98,13 @@ class Alerter:
         if self.dry_run:
             self.printed.update((r["key"], r) for r in rows)
             return
-        if rows and not self.webhook:
-            log.error("SLACK_WEBHOOK_URL is not set; %d match(es) waiting. Use --dry-run to see them.", len(rows))
+        if rows and not self.slack:
+            log.error("%s; %d match(es) waiting. Use --dry-run to see them.", NO_SLACK, len(rows))
             self.broken = True
             return
         for row in rows:
             try:
-                notify.post(self.webhook, notify.build_digest([row]))
+                self.slack.alert(row)
             except httpx.HTTPError as e:
                 log.error("Slack post failed, will retry next run: %s", e)
                 self.broken = True
@@ -72,6 +112,26 @@ class Alerter:
             self.db.mark_alerted([row["key"]])
             self.sent += 1
             log.info("alerted: %d%s %s — %s", row["fit_score"], " 🎮" if row["gaming"] else "", row["title"], row["company"])
+
+    def notice(self, text: str) -> bool:
+        """A status message. False if it wasn't posted (dry run, no Slack, or a failed post)."""
+        if self.dry_run or not self.slack:
+            print(f"\n[notice, not posted] {text}")
+            return False
+        try:
+            self.slack.message(text)
+        except httpx.HTTPError as e:
+            log.error("Slack notice failed, will retry next run: %s", e)
+            return False
+        return True
+
+
+def check_linkedin_mode(db: DB, alerter: Alerter) -> None:
+    """Post once when LinkedIn starts refusing job pages (alerts fall back to the email) and once when it stops."""
+    stats = linkedin.page_stats
+    mode = "email_only" if stats["blocked"] else "full" if stats["read"] else None  # None: no pages tried
+    if mode and mode != (db.get_meta("linkedin_mode") or "full") and alerter.notice(LINKEDIN_NOTICES[mode]):
+        db.set_meta("linkedin_mode", mode)
 
 
 def filters_fingerprint(cfg: dict) -> str:
@@ -106,8 +166,9 @@ def cmd_run(cfg: dict, dry_run: bool, full: bool) -> int:
     # Hydration can reveal a location (aggregators) or a posting we already poll directly.
     polled = {f"{src}:{slug}" for src, slugs in cfg["companies"].items() for slug in slugs}
     seen = known | {j.key for j in fetched.jobs}
-    titles = title_index(db.titles() + [(j.source, j.company, j.title) for j in fetched.jobs])
-    late_drop = [j for j in new if is_duplicate(j, polled, seen, titles) or not flt.location_ok(j)]
+    all_titles = db.titles() + [(j.source, j.company, j.title) for j in fetched.jobs]
+    titles, linkedin_titles = title_index(all_titles), title_index(all_titles, "linkedin")
+    late_drop = [j for j in new if is_duplicate(j, polled, seen, titles, linkedin_titles) or not flt.location_ok(j)]
     for board in sorted({o[0] for j in new if j.source in ("linkedin", "indeed") and (o := origin_board(j.apply_url))} - polled):
         log.info("Email alert job found on %s, which config.toml doesn't poll yet; consider adding it", board)
     new = [j for j in new if j not in late_drop]
@@ -127,6 +188,7 @@ def cmd_run(cfg: dict, dry_run: bool, full: bool) -> int:
     log.info("pipeline: %s", {k: v for k, v in counts.items() if v})
 
     alerter = Alerter(db, cfg, dry_run)
+    check_linkedin_mode(db, alerter)
     alerter.flush()  # anything left over from a previous run (e.g. a failed Slack post)
     if batch:
         try:
@@ -144,6 +206,7 @@ def cmd_run(cfg: dict, dry_run: bool, full: bool) -> int:
             if result is None:
                 tally["errors"] += 1
                 continue
+            cap_limited(result.fit, job, s)
             db.save_score(job.key, result.fit, refused=result.refused, model=result.model,
                           resume_hash=resume_hash, usage=result.usage)
             u = result.usage
@@ -158,6 +221,60 @@ def cmd_run(cfg: dict, dry_run: bool, full: bool) -> int:
     if dry_run:
         print("\n" + notify.format_text(list(alerter.printed.values())))
     return 1 if alerter.broken else 0
+
+
+def cap_limited(fit, job, s: dict) -> None:
+    """A title-only guess shouldn't outrank a job whose full posting was read."""
+    if fit and job.description.startswith(LIMITED_INFO):
+        fit.fit_score = min(fit.fit_score, s.get("limited_info_max_score", 75))
+
+
+def cmd_rehydrate(cfg: dict) -> int:
+    """One-off backfill for LinkedIn jobs stored before LinkedIn's job pages were read."""
+    s = cfg["settings"]
+    db = DB(ROOT / s["db_path"])
+    rows = db.limited_jobs("linkedin")
+    if not rows:
+        print("No LinkedIn jobs without a description.")
+        return 0
+    jobs = [job for job, _ in rows]
+    print(f"Looking up {len(jobs)} LinkedIn job(s), a few seconds apart...")
+    for job in jobs:
+        job.description = ""
+    asyncio.run(hydrate_all(jobs))
+    found = [(job, old) for job, old in rows if not job.description.startswith(LIMITED_INFO)]
+    print(f"Found a description for {len(found)} of {len(jobs)}.")
+    if not found:
+        return 0
+    db.upsert_jobs([job for job, _ in found])
+
+    resume_text, resume_hash = load_resume(s["resume_path"])
+    try:
+        scorer = make_scorer(s["provider"], resume_text, s["model"], s["effort"])
+    except (openai.OpenAIError, anthropic.AnthropicError) as e:
+        log.error("can't create the %s client (is its API key in .env?): %s", s["provider"], e)
+        return 1
+    gaming = filters.Gaming(cfg.get("gaming"))
+    report = []
+    for job, old in found:
+        job.gaming = gaming(job.source, job.company)
+        try:
+            result = scorer.score(job)
+        except RateLimited as e:
+            log.error("rate limited; run rehydrate again later to finish: %s", e)
+            break
+        if result is None or result.refused:
+            continue  # keeps its old score
+        db.save_score(job.key, result.fit, refused=False, model=result.model, resume_hash=resume_hash, usage=result.usage)
+        report.append((old, result.fit, job))
+
+    print(f"\nRe-scored {len(report)} job(s). Old score (no description) -> new score:")
+    for old, fit, job in sorted(report, key=lambda r: r[1].fit_score, reverse=True):
+        before = f"{old['fit_score']:>3} {old['seniority_fit'] or '':<10}" if old["fit_score"] is not None else "  -" + " " * 11
+        print(f"  {before} -> {fit.fit_score:>3} {fit.seniority_fit:<10} {'alerted ' if old['alerted'] else '        '}"
+              f"{job.title} — {job.company}")
+    print("\nJobs not alerted before that now clear the threshold will be alerted on the next run.")
+    return 0
 
 
 def cmd_check_companies(cfg: dict) -> int:
@@ -181,18 +298,25 @@ def cmd_check_companies(cfg: dict) -> int:
 
 
 def cmd_test_slack() -> int:
-    webhook = os.environ.get("SLACK_WEBHOOK_URL")
-    if not webhook:
-        print("SLACK_WEBHOOK_URL is not set in .env")
+    slack = Slack()
+    if not slack:
+        print(NO_SLACK)
         return 1
     sample = {
         "key": "test", "title": "Detection & Response Engineer (New Grad)", "company": "example",
         "location": "San Jose, CA", "remote": 0, "url": "https://example.com", "comp": "$120K - $150K",
         "fit_score": 88, "why": "This is a test message from job-radar.",
         "matched_skills": ["Python automation", "threat intel"], "missing_skills": ["Splunk SPL"], "red_flags": [],
+        "min_qualifications": ["Bachelor's degree or equivalent practical experience",
+                               "1 year of experience with Python"],
+        "preferred_qualifications": ["Experience writing detections in a SIEM"],
     }
-    notify.post(webhook, notify.build_digest([sample]))
-    print("Posted a test message.")
+    try:
+        slack.alert(sample)
+    except httpx.HTTPError as e:
+        print(f"Slack refused the test message: {e}")  # e.g. channel_not_found, not_in_channel, missing_scope
+        return 1
+    print("Posted a test message" + (" with a threaded reply." if slack.bot else " (webhook: qualifications inline)."))
     return 0
 
 
@@ -225,6 +349,7 @@ def main() -> int:
     run = sub.add_parser("run", help="fetch, filter, score, alert")
     run.add_argument("--dry-run", action="store_true", help="print matches instead of posting to Slack")
     run.add_argument("--full", action="store_true", help="ignore ETags and re-check every board")
+    sub.add_parser("rehydrate", help="re-read LinkedIn jobs stored without a description and re-score them")
     sub.add_parser("check-companies", help="verify board slugs in config.toml")
     sub.add_parser("test-slack", help="post a sample message to Slack")
     sub.add_parser("stats", help="totals and estimated spend")
@@ -233,6 +358,8 @@ def main() -> int:
     cfg = load_config()
     if args.cmd == "run":
         return cmd_run(cfg, args.dry_run, args.full)
+    if args.cmd == "rehydrate":
+        return cmd_rehydrate(cfg)
     if args.cmd == "check-companies":
         return cmd_check_companies(cfg)
     if args.cmd == "test-slack":

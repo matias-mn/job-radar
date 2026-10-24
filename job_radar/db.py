@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .models import FitScore, Job
+from .models import LIMITED_INFO, FitScore, Job
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS scores (
     model TEXT, resume_hash TEXT, scored_at TEXT,
     input_tokens INTEGER, output_tokens INTEGER,
     cache_read_tokens INTEGER, cache_write_tokens INTEGER,
-    category TEXT
+    category TEXT, min_qualifications TEXT, preferred_qualifications TEXT
 );
 CREATE TABLE IF NOT EXISTS alerts (
     key TEXT PRIMARY KEY REFERENCES jobs(key),
@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS meta (
 """
 
 
+def _job(r: sqlite3.Row) -> Job:
+    return Job(r["source"], r["company"], r["ext_id"], r["title"], r["location"], bool(r["remote"]), r["url"],
+               datetime.fromisoformat(r["posted_at"]) if r["posted_at"] else None, r["description"], r["comp"])
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -52,8 +57,10 @@ class DB:
         for col, kind in (("bytes", "INTEGER"), ("fetched_at", "TEXT")):  # added in v0.3
             if col not in columns:
                 self.conn.execute(f"ALTER TABLE boards ADD COLUMN {col} {kind}")
-        if "category" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(scores)")}:  # added in v0.4
-            self.conn.execute("ALTER TABLE scores ADD COLUMN category TEXT")
+        score_columns = {r["name"] for r in self.conn.execute("PRAGMA table_info(scores)")}
+        for col in ("category", "min_qualifications", "preferred_qualifications"):  # added in v0.4, v0.5, v0.5
+            if col not in score_columns:
+                self.conn.execute(f"ALTER TABLE scores ADD COLUMN {col} TEXT")
 
     def upsert_jobs(self, jobs: list[Job], status: str = "new") -> None:
         """status='filtered' records jobs dropped after hydration so they aren't fetched again."""
@@ -89,11 +96,18 @@ class DB:
                ORDER BY posted_at IS NULL, posted_at DESC LIMIT ?""",
             (cutoff, limit),
         ).fetchall()
-        return [
-            Job(r["source"], r["company"], r["ext_id"], r["title"], r["location"], bool(r["remote"]), r["url"],
-                datetime.fromisoformat(r["posted_at"]) if r["posted_at"] else None, r["description"], r["comp"])
-            for r in rows
-        ]
+        return [_job(r) for r in rows]
+
+    def limited_jobs(self, source: str) -> list[tuple[Job, dict]]:
+        """Jobs from `source` stored without a full description, with their current score and whether they alerted."""
+        rows = self.conn.execute(
+            """SELECT j.*, s.fit_score, s.seniority_fit, a.key IS NOT NULL AS alerted
+               FROM jobs j LEFT JOIN scores s USING (key) LEFT JOIN alerts a USING (key)
+               WHERE j.source = ? AND instr(j.description, ?) = 1 AND j.status != 'filtered'
+               ORDER BY j.posted_at DESC""",
+            (source, LIMITED_INFO),
+        ).fetchall()
+        return [(_job(r), {k: r[k] for k in ("fit_score", "seniority_fit", "alerted")}) for r in rows]
 
     def etags(self) -> dict[str, str]:
         return {r["board"]: r["etag"] for r in self.conn.execute("SELECT board, etag FROM boards") if r["etag"]}
@@ -140,13 +154,14 @@ class DB:
     def save_score(self, key: str, fit: FitScore | None, *, refused: bool, model: str, resume_hash: str, usage) -> None:
         f = fit.model_dump() if fit else {}
         self.conn.execute(
-            """INSERT OR REPLACE INTO scores VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT OR REPLACE INTO scores VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 key, f.get("fit_score"), f.get("seniority_fit"),
                 json.dumps(f.get("matched_skills", [])), json.dumps(f.get("missing_skills", [])),
                 json.dumps(f.get("red_flags", [])), int(f.get("shift_or_oncall", False)), f.get("why"),
                 int(refused), model, resume_hash, _now(),
                 usage.input, usage.output, usage.cache_read, usage.cache_write, f.get("category"),
+                json.dumps(f.get("min_qualifications", [])), json.dumps(f.get("preferred_qualifications", [])),
             ),
         )
         self.conn.commit()
@@ -156,7 +171,8 @@ class DB:
         floor = min(threshold, gaming_threshold) if is_gaming and gaming_threshold is not None else threshold
         rows = self.conn.execute(
             """SELECT j.*, s.fit_score, s.seniority_fit, s.matched_skills, s.missing_skills,
-                      s.red_flags, s.shift_or_oncall, s.why, s.category
+                      s.red_flags, s.shift_or_oncall, s.why, s.category,
+                      s.min_qualifications, s.preferred_qualifications
                FROM scores s JOIN jobs j USING (key)
                WHERE s.refused = 0 AND s.fit_score >= ? AND s.seniority_fit != 'too_senior'
                  AND j.status != 'dismissed'
@@ -170,7 +186,7 @@ class DB:
             d["gaming"] = bool(is_gaming and is_gaming(d["source"], d["company"]))
             if d["fit_score"] < (gaming_threshold if d["gaming"] else threshold):
                 continue
-            for field in ("matched_skills", "missing_skills", "red_flags"):
+            for field in ("matched_skills", "missing_skills", "red_flags", "min_qualifications", "preferred_qualifications"):
                 d[field] = json.loads(d[field] or "[]")
             out.append(d)
         out.sort(key=lambda d: (d["gaming"], d["fit_score"]), reverse=True)

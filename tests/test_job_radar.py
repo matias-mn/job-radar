@@ -155,7 +155,8 @@ def usage():
 
 def fit(score, seniority="good"):
     return FitScore(fit_score=score, category="SOC / Security Operations", seniority_fit=seniority, matched_skills=["Python"], missing_skills=["Splunk"],
-                    red_flags=[], shift_or_oncall=False, why="Good fit.")
+                    red_flags=[], shift_or_oncall=False, why="Good fit.",
+                    min_qualifications=["BS in CS or related"], preferred_qualifications=["Splunk SPL", "Sigma rules"])
 
 
 def test_db_alerts_once_and_respects_threshold(tmp_path):
@@ -171,6 +172,8 @@ def test_db_alerts_once_and_respects_threshold(tmp_path):
 
     rows = db.pending_alerts(threshold=70, limit=10)
     assert [r["key"] for r in rows] == [jobs[0].key]
+    assert rows[0]["min_qualifications"] == ["BS in CS or related"]
+    assert rows[0]["preferred_qualifications"] == ["Splunk SPL", "Sigma rules"]
     db.mark_alerted([jobs[0].key])
     assert db.pending_alerts(threshold=70, limit=10) == []
 
@@ -629,7 +632,9 @@ def _resolve(job, routes):
         calls.append(str(req.url))
         for prefix, body in routes.items():
             if str(req.url).startswith(prefix):
-                return httpx.Response(200, json=body)
+                if isinstance(body, int):
+                    return httpx.Response(body)
+                return httpx.Response(200, text=body) if isinstance(body, str) else httpx.Response(200, json=body)
         return httpx.Response(404)
 
     async def run():
@@ -674,7 +679,105 @@ def test_resolve_falls_back_to_limited_info():
     calls = _resolve(job, {})
     assert job.description == LIMITED_INFO and job.apply_url == ""
     assert job.url == "https://www.linkedin.com/jobs/view/42/"
-    assert len(calls) == 9  # 3 slug guesses x 3 boards, all 404
+    assert len(calls) == 10  # 3 slug guesses x 3 boards, then LinkedIn's page, all 404
+
+
+LINKEDIN_PAGE = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/42"
+
+
+def test_linkedin_parse_posting():
+    from job_radar.sources import linkedin
+    text = linkedin.parse_posting((FIXTURES / "linkedin_posting.html").read_text())
+    assert text.startswith("Employment type: Full-time\n\n")  # "Seniority level: Not Applicable" is left out
+    assert "- 1 year of experience with security assessments" in text
+    assert "Industries" not in text and "Show less" not in text
+    page = ('<h3 class="description__job-criteria-subheader">Seniority level</h3><span class="x">Mid-Senior level</span>'
+            'No longer accepting applications<div class="show-more-less-html__markup x">8+ years of SOC work</div>')
+    assert linkedin.parse_posting(page) == ("LinkedIn says this job is no longer accepting applications.\n"
+                                            "Seniority level: Mid-Senior level\n\n8+ years of SOC work")
+    assert linkedin.parse_posting("<html>sign in</html>") == ""
+
+
+def test_resolve_falls_back_to_linkedin_page():
+    job = linkedin_job(company="Nobody Inc")
+    _resolve(job, {LINKEDIN_PAGE: (FIXTURES / "linkedin_posting.html").read_text()})
+    assert "security design reviews" in job.description
+    assert job.url == "https://www.linkedin.com/jobs/view/42/" and job.apply_url == ""
+
+
+def test_linkedin_pushback_stops_page_reads_for_the_run(monkeypatch):
+    from job_radar.sources import linkedin, resolve
+    monkeypatch.setattr(linkedin, "GAP_SECONDS", 0)
+    monkeypatch.setattr(linkedin, "BACKOFF_SECONDS", 0)
+    pages = []
+
+    def handler(req):
+        if "jobs-guest" in str(req.url):
+            pages.append(str(req.url))
+            return httpx.Response(999)
+        return httpx.Response(404)
+
+    jobs = [linkedin_job(company="Nobody Inc"), linkedin_job(title="SOC Analyst", company="Nobody Inc")]
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            for job in jobs:
+                await resolve.hydrate(client, job)
+
+    monkeypatch.setattr(linkedin, "page_stats", type(linkedin.page_stats)())
+    asyncio.run(run())
+    assert len(pages) == linkedin.TRIES  # all for the first job; the second doesn't try
+    assert linkedin.page_stats == {"blocked": 1}
+    assert all(job.description == LIMITED_INFO for job in jobs)
+
+
+def test_linkedin_retries_a_passing_429(monkeypatch):
+    from job_radar.sources import linkedin
+    monkeypatch.setattr(linkedin, "GAP_SECONDS", 0)
+    monkeypatch.setattr(linkedin, "BACKOFF_SECONDS", 0)
+    page = (FIXTURES / "linkedin_posting.html").read_text()
+    answers = [httpx.Response(429), httpx.Response(200, text=page)]
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: answers.pop(0))) as client:
+            return await linkedin.fetch_description(client, "42")
+
+    assert "security design reviews" in asyncio.run(run())
+
+
+def test_indeed_job_also_on_linkedin_is_a_duplicate():
+    linkedin_titles = title_index([("linkedin", "THINK Surgical", "Cybersecurity Operations Analyst"),
+                                   ("indeed", "Acme", "SOC Analyst")], "linkedin")
+    job = Job("indeed", "THINK Surgical, Inc.", "abc", "Cybersecurity Operations Analyst", "Fremont, CA", False, "u", NOW, "d")
+    assert is_duplicate(job, set(), set(), {}, linkedin_titles)
+    assert not is_duplicate(Job("indeed", "Acme", "b", "SOC Analyst", "", False, "u", NOW, "d"), set(), set(), {}, linkedin_titles)
+    job.source = "linkedin"  # LinkedIn's own copy is never dropped for this
+    assert not is_duplicate(job, set(), set(), {}, linkedin_titles)
+
+
+def test_limited_info_score_is_capped():
+    from job_radar.__main__ import cap_limited
+    fit = FitScore(fit_score=90, category="Other", seniority_fit="good", matched_skills=[], missing_skills=[],
+                   red_flags=[], shift_or_oncall=False, why="w", min_qualifications=[], preferred_qualifications=[])
+    cap_limited(fit, linkedin_job(), {"limited_info_max_score": 75})
+    assert fit.fit_score == 90  # no description yet means not limited
+    job = linkedin_job()
+    job.description = LIMITED_INFO
+    cap_limited(fit, job, {"limited_info_max_score": 75})
+    assert fit.fit_score == 75
+    cap_limited(None, job, {})  # refusals have no score
+
+
+def test_db_limited_jobs(tmp_path):
+    db = DB(tmp_path / "t.db")
+    limited, full = linkedin_job(), linkedin_job(title="SOC Analyst")
+    limited.description, full.description = LIMITED_INFO, "full posting"
+    full.ext_id = "43"
+    db.upsert_jobs([limited, full])
+    db.mark_alerted([limited.key])
+    [(job, old)] = db.limited_jobs("linkedin")
+    assert job.key == limited.key and old == {"fit_score": None, "seniority_fit": None, "alerted": 1}
+    assert db.limited_jobs("indeed") == []
 
 
 def test_gaming_matches_company_names_from_emails():
@@ -732,3 +835,97 @@ def test_limited_info_keeps_indeed_snippet():
            "url": "u", "comp": None, "fit_score": 72, "why": "w", "source": "indeed", "description": job.description,
            "matched_skills": [], "missing_skills": [], "red_flags": []}
     assert "📧 Indeed alert · limited info" in notify.build_digest([row])["blocks"][1]["text"]["text"]
+
+
+# ---- uncertain scores, qualifications, Slack bot, LinkedIn mode ----
+
+def alert_row(**kw):
+    row = {"key": "k", "title": "SOC Analyst", "company": "Acme", "location": "San Jose, CA", "remote": 0,
+           "url": "https://x", "comp": None, "fit_score": 88, "why": "w", "source": "linkedin", "description": "full",
+           "matched_skills": [], "missing_skills": [], "red_flags": [],
+           "min_qualifications": ["1 year of SOC work"], "preferred_qualifications": ["Splunk <SPL>"]}
+    return row | kw
+
+
+def test_limited_score_shows_question_mark():
+    row = alert_row(description=LIMITED_INFO, source="indeed")
+    payload = notify.build_digest([row])
+    assert "*88?*" in payload["blocks"][1]["text"]["text"] and payload["text"].startswith("88? ·")
+    assert "limited info, score is a guess" in payload["blocks"][1]["text"]["text"]
+    assert "[ 88?]" in notify.format_text([row])
+    full = notify.build_digest([alert_row()])
+    assert "*88*" in full["blocks"][1]["text"]["text"] and "guess" not in full["blocks"][1]["text"]["text"]
+    # any source, not just the ones we know today
+    assert "*70?*" in notify.build_digest([alert_row(fit_score=70, source="glassdoor", description=LIMITED_INFO)])["blocks"][1]["text"]["text"]
+
+
+def test_qualifications_reply_and_inline():
+    reply = notify.build_qualifications(alert_row())
+    texts = [b["text"]["text"] for b in reply["blocks"]]
+    assert texts == ["*Minimum qualifications*\n• 1 year of SOC work", "*Preferred qualifications*\n• Splunk &lt;SPL&gt;"]
+    assert notify.build_qualifications(alert_row(min_qualifications=[], preferred_qualifications=[])) is None
+    assert notify.build_qualifications(alert_row(min_qualifications=None, preferred_qualifications=None)) is None  # scored before v0.5
+    inline = notify.build_digest([alert_row()], with_qualifications=True)["blocks"]
+    assert any(b.get("text", {}).get("text", "").startswith("*Minimum qualifications*") for b in inline)
+    assert not any("qualifications" in b.get("text", {}).get("text", "") for b in notify.build_digest([alert_row()])["blocks"])
+    assert "      min: 1 year of SOC work" in notify.format_text([alert_row()])
+
+
+def mock_slack_api(monkeypatch, handler):
+    monkeypatch.setattr(notify.httpx, "post",
+                        lambda url, **kw: httpx.Client(transport=httpx.MockTransport(handler)).post(url, **kw))
+
+
+def test_slack_bot_threads_qualifications(monkeypatch):
+    from job_radar import __main__ as cli
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_CHANNEL", "C123")
+    posts = []
+
+    def handler(req):
+        posts.append(json.loads(req.content))
+        assert req.headers["authorization"] == "Bearer xoxb-test"
+        return httpx.Response(200, json={"ok": True, "ts": f"17.{len(posts)}"})
+
+    mock_slack_api(monkeypatch, handler)
+    cli.Slack().alert(alert_row())
+    assert [p.get("thread_ts") for p in posts] == [None, "17.1"]
+    assert posts[0]["channel"] == "C123" and "Minimum qualifications" in json.dumps(posts[1])
+    assert "qualifications" not in json.dumps(posts[0])
+
+
+def test_slack_bot_error_raises(monkeypatch):
+    mock_slack_api(monkeypatch, lambda req: httpx.Response(200, json={"ok": False, "error": "not_in_channel"}))
+    with pytest.raises(httpx.HTTPError, match="not_in_channel"):
+        notify.post_bot("t", "C1", {"text": "x"})
+
+
+class FakeAlerter:
+    def __init__(self, ok=True):
+        self.ok, self.sent = ok, []
+
+    def notice(self, text):
+        self.sent.append(text)
+        return self.ok
+
+
+def test_linkedin_mode_notices(tmp_path, monkeypatch):
+    from collections import Counter
+    from job_radar import __main__ as cli
+    from job_radar.sources import linkedin
+    db = DB(tmp_path / "t.db")
+
+    def run(stats, ok=True):
+        monkeypatch.setattr(linkedin, "page_stats", Counter(stats))
+        alerter = FakeAlerter(ok)
+        cli.check_linkedin_mode(db, alerter)
+        return alerter.sent
+
+    assert run({"read": 3}) == []  # already reading full pages: nothing to say
+    assert run({}) == []  # no LinkedIn jobs this run
+    assert run({"read": 2, "blocked": 1}, ok=False) == [cli.LINKEDIN_NOTICES["email_only"]]  # post failed...
+    assert run({"blocked": 1}) == [cli.LINKEDIN_NOTICES["email_only"]]  # ...so it's tried again
+    assert run({"blocked": 1}) == []  # once only
+    assert run({}) == []
+    assert run({"read": 1}) == [cli.LINKEDIN_NOTICES["full"]]
+    assert run({"read": 1}) == []

@@ -1,18 +1,32 @@
 """LinkedIn job-alert emails (jobalerts-noreply@linkedin.com), read by email_alerts.py.
 
 Each email lists up to ~6 job cards: title, "Company · Location (Remote|Hybrid|On-site)",
-and sometimes a salary. There's no description, so hydrate() looks for the same
-posting on the company's own job board (resolve.py). LinkedIn's job pages are never
-fetched. Links in the emails carry login and tracking tokens, so only the bare job
-ID is kept.
+and sometimes a salary. There's no description, so resolve.hydrate() first looks for
+the same posting on the company's own job board, then falls back to LinkedIn's public
+job page (fetch_description). That page needs no login and gives the full description
+plus LinkedIn's seniority level. It's read one job at a time, a few seconds apart.
+LinkedIn sometimes answers 429 even at that pace, so a refusal is retried after a
+pause; after a few in a row, LinkedIn's pages are skipped for the rest of the run. Links in the emails carry login and
+tracking tokens, so only the bare job ID is kept.
 """
 
+import asyncio
 import html
+import logging
 import re
+import time
+import weakref
+from collections import Counter
+from dataclasses import dataclass, field
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 
+import httpx
+
 from ..models import Job
+from . import html_to_text
+
+log = logging.getLogger(__name__)
 
 CARD_RE = re.compile(r'<[^>]*data-test-id="job-card"[^>]*>')
 JOB_ID_RE = re.compile(r"jobs/view/(\d+)")
@@ -66,3 +80,70 @@ def parse_email(msg: EmailMessage) -> list[Job]:
                 comp=card["comp"],
             ))
     return jobs
+
+
+# ---- LinkedIn's public job page ----
+
+GUEST_URL = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{id}"
+MARKUP_RE = re.compile(r'class="show-more-less-html__markup[^"]*"[^>]*>(.*?)</div>', re.S)
+CRITERIA_RE = re.compile(r'job-criteria-subheader">\s*(.*?)\s*</h3>\s*<span[^>]*>\s*(.*?)\s*</span>', re.S)
+CRITERIA = ("Seniority level", "Employment type")
+CLOSED = "No longer accepting applications"
+GAP_SECONDS = 3  # between page requests
+PUSHBACK = {429, 999}  # 999 is LinkedIn's "looks like a bot"
+BACKOFF_SECONDS = 15  # after a refusal: wait 15 s, then 30 s, then give up for the run
+TRIES = 3
+
+
+@dataclass
+class _Pace:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    last: float = 0.0
+    blocked: bool = False
+
+
+_pace: "weakref.WeakKeyDictionary[httpx.AsyncClient, _Pace]" = weakref.WeakKeyDictionary()  # per client (one per run)
+# This process's page reads: "read" (got a page) and "blocked" (gave up after TRIES refusals).
+# __main__ turns these into a Slack notice when LinkedIn starts or stops refusing.
+page_stats: Counter = Counter()
+
+
+def parse_posting(page: str) -> str:
+    """The description, headed by LinkedIn's seniority level and employment type. '' if the page has none."""
+    m = MARKUP_RE.search(page)
+    body = html_to_text(m[1]) if m else ""
+    if not body:
+        return ""
+    header = [f"{k}: {html.unescape(v)}" for k, v in CRITERIA_RE.findall(page) if k in CRITERIA and v != "Not Applicable"]
+    if CLOSED in page:
+        header.insert(0, "LinkedIn says this job is no longer accepting applications.")
+    return "\n".join(header + ["", body]) if header else body
+
+
+async def fetch_description(client: httpx.AsyncClient, job_id: str) -> str:
+    """'' when the posting is gone, has no description, or LinkedIn is pushing back."""
+    pace = _pace.setdefault(client, _Pace())
+    async with pace.lock:
+        if pace.blocked:
+            return ""
+        for attempt in range(1, TRIES + 1):
+            await asyncio.sleep(max(0.0, pace.last + GAP_SECONDS - time.monotonic()))
+            try:
+                r = await client.get(GUEST_URL.format(id=job_id))
+            finally:
+                pace.last = time.monotonic()
+            if r.status_code not in PUSHBACK:
+                break
+            if attempt < TRIES:
+                await asyncio.sleep(BACKOFF_SECONDS * attempt)
+        else:
+            pace.blocked = True
+            page_stats["blocked"] += 1
+            log.warning("LinkedIn answered %d %d times in a row; skipping its job pages for the rest of this run",
+                        r.status_code, TRIES)
+            return ""
+    if r.status_code == 404:
+        return ""
+    r.raise_for_status()
+    page_stats["read"] += 1
+    return parse_posting(r.text)
