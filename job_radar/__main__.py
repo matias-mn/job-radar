@@ -35,7 +35,10 @@ log = logging.getLogger("job_radar")
 
 
 def load_config() -> dict:
-    with open(ROOT / "config.toml", "rb") as f:
+    path = ROOT / "config.toml"
+    if not path.exists():
+        sys.exit("No config.toml: copy config.example.toml to config.toml and edit it (see README).")
+    with open(path, "rb") as f:
         return tomllib.load(f)
 
 

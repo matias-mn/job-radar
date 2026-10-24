@@ -6,3 +6,6 @@ logs/*
 __pycache__/
 .pytest_cache/
 *.db.bak*
+# personal: copied from the *.example files
+config.toml
+profile.md

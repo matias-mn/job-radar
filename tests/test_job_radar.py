@@ -1,6 +1,7 @@
 import asyncio
 import json
 import tomllib
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 import anthropic
@@ -135,15 +136,22 @@ def test_apply_drops_old_and_sorts_newest_first(flt):
 
 # ---- resume ----
 
-RESUME = Path("~/path/to/resume.docx").expanduser()
+def make_docx(path, paragraphs):
+    body = "".join(f"<w:p><w:r><w:t>{p}</w:t></w:r></w:p>" for p in paragraphs)
+    xml = ('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+           f"<w:body>{body}</w:body></w:document>")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("word/document.xml", xml)
 
 
-@pytest.mark.skipif(not RESUME.exists(), reason="resume not on this machine")
-def test_resume_strips_contact_info():
-    text, digest = load_resume(RESUME)
+def test_resume_strips_contact_info(tmp_path):
+    resume = tmp_path / "resume.docx"
+    make_docx(resume, ["Jane Doe", "(555) 010-0000 | jane@example.com | linkedin.com/in/janedoe",
+                       "EDUCATION", "B.S. Computer Science", "EXPERIENCE", "Built a phishing-domain detection service"])
+    text, digest = load_resume(resume)
     assert text.startswith("EDUCATION")
-    assert "@" not in text.split("\n")[0]
-    assert "@" not in text
+    assert "Jane" not in text and "555" not in text and "@" not in text
+    assert "phishing-domain detection" in text
     assert len(digest) == 12
 
 

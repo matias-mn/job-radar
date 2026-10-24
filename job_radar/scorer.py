@@ -2,6 +2,7 @@
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 import anthropic
 import openai
@@ -10,19 +11,16 @@ from .models import FitScore, Job
 
 log = logging.getLogger(__name__)
 
+ROOT = Path(__file__).resolve().parent.parent
+# Who the candidate is and what they want. profile.md is personal and gitignored;
+# profile.example.md is the template it's copied from.
+PROFILES = [ROOT / "profile.md", ROOT / "profile.example.md"]
+
 RUBRIC = """\
 You screen job postings for one candidate and score how good a fit each one is. \
 You see the candidate's resume and preferences once, then one job posting per request.
 
-## The candidate
-- Finishing a B.S. in a computing or networking field, graduating within the next few months. Wants a full-time role starting after graduation.
-- About a year as a security intern doing detection engineering and security automation (Python services, alert triage, Slack/Jira integrations), plus some IT or lab work.
-- Open to on-site/hybrid in their metro area or remote within the US.
-
-## What they want
-Best fit is detection engineering / security automation: understand an attack, then build tooling that catches it. They like an even mix of investigating threats and building tools.
-They'd especially like to work in the video game industry (studios, publishers, game platforms, anti-cheat). When a posting is from a gaming company, say so in `why` if it's a real fit, but score the fit honestly: the app applies the gaming preference separately.
-Any entry-level security role is in scope, including SOC analyst, incident response, threat intel, GRC and trust & safety / fraud.
+{profile}
 
 ## How to score (fit_score, 0-100)
 Score how well their background matches and how realistic it is for them to get the job. \
@@ -73,6 +71,17 @@ class RateLimited(Exception):
     """Raised to stop scoring for the rest of this run."""
 
 
+def load_profile() -> str:
+    path = next(p for p in PROFILES if p.exists())
+    if path.name != "profile.md":
+        log.warning("no profile.md; scoring against %s", path.name)
+    return path.read_text().strip()
+
+
+def system_prompt(resume_text: str) -> str:
+    return RUBRIC.format(profile=load_profile(), resume=resume_text)
+
+
 def job_prompt(job: Job) -> str:
     posted = job.posted_at.date().isoformat() if job.posted_at else "unknown"
     return (
@@ -100,7 +109,7 @@ class AnthropicScorer:
         self.effort = effort
         # Frozen per run so every call after the first reads it from the prompt cache.
         self.system = [
-            {"type": "text", "text": RUBRIC.format(resume=resume_text), "cache_control": {"type": "ephemeral"}}
+            {"type": "text", "text": system_prompt(resume_text), "cache_control": {"type": "ephemeral"}}
         ]
 
     def score(self, job: Job) -> ScoreResult | None:
@@ -144,7 +153,7 @@ class OpenAIScorer:
         self.model = model
         self.effort = effort
         # OpenAI caches identical prompt prefixes (1024+ tokens) automatically.
-        self.instructions = RUBRIC.format(resume=resume_text)
+        self.instructions = system_prompt(resume_text)
 
     def score(self, job: Job) -> ScoreResult | None:
         """Returns None on a transient error (the job is retried next run)."""
