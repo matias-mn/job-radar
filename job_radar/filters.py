@@ -20,6 +20,27 @@ US_STATES = (
     "vermont virginia washington wisconsin wyoming"
 ).split() + ["new hampshire", "new jersey", "new mexico", "new york", "north carolina", "north dakota",
              "rhode island", "south carolina", "south dakota", "west virginia"]
+# Countries and big tech hubs abroad, on top of config's non_us_markers, so a posting from a place nobody
+# thought to list ("Kyiv") doesn't pass as remote-US. Left out: names that are also US places seen in
+# postings (Georgia, Lebanon PA, Malta NY, Panama City FL, Vienna VA, Lima OH, Warsaw IN, ...).
+NON_US_PLACES = (
+    "afghanistan albania algeria andorra angola argentina armenia australia austria azerbaijan bahrain bangladesh "
+    "belarus belgium bolivia bosnia botswana brazil bulgaria cambodia cameroon canada chile china colombia croatia "
+    "cyprus czechia denmark ecuador egypt estonia ethiopia finland france germany ghana greece guatemala "
+    "honduras hungary iceland india indonesia iran iraq ireland israel italy japan kazakhstan kenya kosovo kuwait "
+    "kyrgyzstan latvia lithuania luxembourg malaysia mauritius mexico moldova monaco mongolia montenegro morocco "
+    "myanmar nepal netherlands nicaragua nigeria norway oman pakistan paraguay peru philippines poland portugal qatar "
+    "romania russia rwanda scotland senegal serbia singapore slovakia slovenia spain sweden switzerland taiwan "
+    "tanzania thailand tunisia turkey türkiye uae uganda ukraine uruguay uzbekistan venezuela vietnam wales zambia "
+    "zimbabwe kyiv kiev lviv krakow bucharest belgrade budapest prague zurich munich hyderabad pune chennai mumbai "
+    "noida gurgaon gurugram bangkok jakarta taipei beijing shenzhen dubai riyadh nairobi johannesburg medellin "
+    "guadalajara monterrey"
+).split() + ["costa rica", "czech republic", "dominican republic", "el salvador", "great britain", "hong kong",
+             "ivory coast", "kuala lumpur", "new zealand", "north macedonia", "saudi arabia", "south africa",
+             "south korea", "sri lanka", "united arab emirates", "viet nam", "cape town", "sao paulo", "são paulo",
+             "buenos aires", "bogota", "bogotá", "mexico city"]
+# Multi-location postings: "San Francisco, CA; London, UK", "SF / NYC", "Austin or San Jose".
+LOCATION_PARTS_RE = re.compile(r";|\||/|\n| or ")
 # "Seattle, WA" style. Case-sensitive on purpose so words like "in" or "or" don't match.
 STATE_CODE_RE = re.compile(
     r",\s*(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|"
@@ -53,7 +74,7 @@ class Filters:
         self.exclude = _pattern(cfg["title_exclude"])
         self.bay_area = _pattern(cfg["bay_area"])
         self.us = _pattern(cfg["us_markers"])
-        self.non_us = _pattern(cfg["non_us_markers"])
+        self.non_us = _pattern(cfg["non_us_markers"] + NON_US_PLACES)
         self.states = _pattern(US_STATES)
         self.gaming = gaming or Gaming(None)
 
@@ -61,19 +82,25 @@ class Filters:
         t = title.lower()
         return bool(self.include.search(t)) and not self.exclude.search(t)
 
+    def abroad(self, loc: str) -> bool:
+        """Names a place outside the US and nothing in it ("Bengaluru, IN" isn't Indiana; "New Mexico" is fine).
+        State codes don't count as US here: ", CA" is also Canada."""
+        return bool(self.non_us.search(loc)) and not (self.us.search(loc) or self.states.search(loc))
+
     def in_us(self, location: str) -> bool:
         loc = location.lower()
-        if self.non_us.search(loc) and not self.us.search(loc):
-            return False  # e.g. "Bengaluru, IN" isn't Indiana
+        if self.abroad(loc):
+            return False
         return bool(self.us.search(loc) or self.states.search(loc) or STATE_CODE_RE.search(location))
 
     def location_ok(self, job: Job) -> bool:
         if job.location is None:
             return True  # unknown until hydrated; checked again afterwards
         loc = job.location.lower()
-        if self.bay_area.search(loc):
+        # Each part separately, so "San Jose, Costa Rica" doesn't pass as San Jose, CA.
+        if any(self.bay_area.search(part) and not self.abroad(part) for part in LOCATION_PARTS_RE.split(loc)):
             return True
-        if job.remote and not (self.non_us.search(loc) and not self.us.search(loc)):
+        if job.remote and not self.abroad(loc):
             return True
         # Dream-industry exception: gaming jobs anywhere in the US.
         return self.gaming.any_us_location and self.gaming(job.source, job.company) and self.in_us(job.location)

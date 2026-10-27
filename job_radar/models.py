@@ -57,6 +57,14 @@ class FitScore(BaseModel):
         description="Dealbreakers or concerns: years required, clearance, cert required, shift work, on-call, non-US, etc."
     )
     shift_or_oncall: bool = Field(description="True if the role mentions shift work, 24/7 coverage, or on-call rotation.")
+    location_fit: Literal["ok", "elsewhere", "unclear"] = Field(
+        description="Can the candidate do this job from where they're based (see their profile)? "
+        "ok = an office they're open to, or remote open to their state or anywhere in the country; "
+        "elsewhere = they'd have to live or work somewhere else: on-site/hybrid at offices outside their area, "
+        "or remote limited to states or regions that leave theirs out; "
+        "unclear = remote, but the posting names a city or state outside their area and doesn't say whether "
+        "they'd have to live there."
+    )
     why: str = Field(description="1-2 sentences explaining the score, written to the candidate.")
     min_qualifications: list[str] = Field(
         description="The posting's minimum / required / basic qualifications, one per item, in the posting's own words. "

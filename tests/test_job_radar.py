@@ -15,8 +15,8 @@ from job_radar.db import DB
 from job_radar.models import LIMITED_INFO, FitScore, Job
 from job_radar.resume import load_resume
 from job_radar.scorer import AnthropicScorer, OpenAIScorer, Usage, make_scorer
-from job_radar.sources import (Fetched, ashby, fetch_all, gamejobs, greenhouse, html_to_text, hydrate_all,
-                               is_duplicate, lever, phenom, title_index, workday)
+from job_radar.sources import (Fetched, ashby, fetch_all, freehire, gamejobs, greenhouse, html_to_text, hydrate_all,
+                               is_duplicate, lever, origin_board, phenom, repeats, title_index, workday)
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -101,6 +101,7 @@ def test_html_to_text_unescapes_greenhouse_double_escaping():
     ("Cybersecurity Analyst in Santa Clara, CA", True),
     ("Social Media Manager", False),          # "soc" must be a whole word
     ("Software Engineer, Payments", False),
+    ("Plumber/Leak Detection Technician", False),  # "detection" outside security
 ])
 def test_title_filter(flt, title, keep):
     assert flt.title_ok(title) is keep
@@ -117,6 +118,13 @@ def test_title_filter(flt, title, keep):
     ("Remote, Canada; Remote, United States", True, True),
     ("Austin, TX", False, False),
     ("Tel Aviv", False, False),
+    ("San Jose, Costa Rica", False, False),           # not San Jose, CA
+    ("Heredia; San Jose, Costa Rica", False, False),
+    ("San Francisco, CA; London, UK", False, True),   # one Bay Area office is enough
+    ("London, UK or San Jose, CA", False, True),
+    ("Kyiv, Kyiv city", True, False),                 # remote, but abroad: built-in place list
+    ("Remote - New Mexico", True, True),              # "Mexico", but a US state
+    ("Remote, Canada; Remote, United States", True, True),
 ])
 def test_location_filter(flt, location, remote, keep):
     assert flt.location_ok(make_job(location=location, remote=remote)) is keep
@@ -161,9 +169,9 @@ def usage():
     return Usage(input=100, output=50)
 
 
-def fit(score, seniority="good"):
+def fit(score, seniority="good", location_fit="ok"):
     return FitScore(fit_score=score, category="SOC / Security Operations", seniority_fit=seniority, matched_skills=["Python"], missing_skills=["Splunk"],
-                    red_flags=[], shift_or_oncall=False, why="Good fit.",
+                    red_flags=[], shift_or_oncall=False, location_fit=location_fit, why="Good fit.",
                     min_qualifications=["BS in CS or related"], preferred_qualifications=["Splunk SPL", "Sigma rules"])
 
 
@@ -281,6 +289,27 @@ def test_slack_shows_category_date_and_shift():
     section = notify.build_digest([row])["blocks"][1]["text"]["text"]
     assert "🏷️ SOC / Security Operations · posted Oct 3, 2026 · shift/on-call" in section
     assert "SOC / Security Operations · posted Oct 3, 2026" in notify.format_text([row])
+
+
+def test_jobs_tied_to_another_place_arent_alerted(tmp_path):
+    db = DB(tmp_path / "t.db")
+    jobs = [make_job(ext_id=str(i), location="Atlanta, GA", remote=True) for i in range(3)]
+    db.upsert_jobs(jobs)
+    for job, where in zip(jobs, ("ok", "elsewhere", "unclear")):
+        db.save_score(job.key, fit(80, location_fit=where), refused=False, model="m", resume_hash="h", usage=usage())
+    rows = db.pending_alerts(threshold=70, limit=10)
+    assert sorted(r["location_fit"] for r in rows) == ["ok", "unclear"]
+    unclear = next(r for r in rows if r["location_fit"] == "unclear")
+    assert "📍 check where you'd have to live" in notify.build_digest([unclear])["blocks"][1]["text"]["text"]
+
+
+def test_scores_from_before_location_fit_still_alert(tmp_path):
+    db = DB(tmp_path / "t.db")
+    job = make_job()
+    db.upsert_jobs([job])
+    db.save_score(job.key, fit(90), refused=False, model="m", resume_hash="h", usage=usage())
+    db.conn.execute("UPDATE scores SET location_fit = NULL")
+    assert len(db.pending_alerts(threshold=70, limit=10)) == 1
 
 
 def test_score_saves_category(tmp_path):
@@ -766,7 +795,8 @@ def test_indeed_job_also_on_linkedin_is_a_duplicate():
 def test_limited_info_score_is_capped():
     from job_radar.__main__ import cap_limited
     fit = FitScore(fit_score=90, category="Other", seniority_fit="good", matched_skills=[], missing_skills=[],
-                   red_flags=[], shift_or_oncall=False, why="w", min_qualifications=[], preferred_qualifications=[])
+                   red_flags=[], shift_or_oncall=False, location_fit="ok", why="w", min_qualifications=[],
+                   preferred_qualifications=[])
     cap_limited(fit, linkedin_job(), {"limited_info_max_score": 75})
     assert fit.fit_score == 90  # no description yet means not limited
     job = linkedin_job()
@@ -937,3 +967,143 @@ def test_linkedin_mode_notices(tmp_path, monkeypatch):
     assert run({}) == []
     assert run({"read": 1}) == [cli.LINKEDIN_NOTICES["full"]]
     assert run({"read": 1}) == []
+
+
+# ---- freehire ----
+
+def test_freehire_normalize():
+    raw = fixture("freehire.json")["data"]
+    job = freehire.normalize(raw[0])
+    assert job.key == "freehire:Acme Robotics:security-engineer-i-acme-a1b2"
+    assert job.title == "Security Engineer I"
+    assert job.location == "Alameda, CA (San Francisco Bay Area)"  # Alameda isn't in config's city list
+    assert not job.remote and job.description == ""  # the search preview isn't used
+    assert job.comp == "USD 110,000-140,000 per year"
+    assert job.posted_at.date().isoformat() == "2026-10-24"
+    assert job.apply_url.startswith("https://acme.wd5.myworkdayjobs.com/")
+    other = freehire.normalize(raw[1])
+    assert other.remote and other.location == "" and other.comp is None
+    assert other.posted_at.date().isoformat() == "2026-10-24"  # no posted_at: when freehire first saw it
+
+
+def test_freehire_fetch_reads_until_last_seen_job(monkeypatch):
+    page = fixture("freehire.json")
+    calls = []
+
+    def handler(req):
+        calls.append(dict(req.url.params))
+        if req.url.path.endswith("/jobs/search"):
+            return httpx.Response(200, json=page)
+        return httpx.Response(200, json={"data": {"description": "<p>Full posting: <b>hunt threats</b></p>"}})
+
+    from job_radar import sources
+    real = httpx.AsyncClient
+    monkeypatch.setattr(sources, "_client", lambda: real(transport=httpx.MockTransport(handler)))
+    query = "category=security&requires_clearance=false"
+
+    first = asyncio.run(fetch_all({"freehire": [query]}))
+    assert len(first.jobs) == 2 and first.jobs[0].board == f"freehire:{query}"
+    assert json.loads(first.etags[f"freehire:{query}"]) == {  # newest job seen
+        "created_at": "2026-10-25T09:00:00Z", "slugs": ["security-engineer-i-acme-a1b2"]}
+    assert calls[0] | {"offset": "0"} == {"category": "security", "requires_clearance": "false", "countries": "US",
+                                          "sort": "created_at", "order": "desc", "open_within_days": "15",
+                                          "limit": "100", "offset": "0"}
+    assert asyncio.run(hydrate_all(first.jobs[:1])) == set()
+    assert first.jobs[0].description == "Full posting: hunt threats"
+
+    # Next check: the 09:00 job is already known, the 18:30 one older, so nothing new.
+    second = asyncio.run(fetch_all({"freehire": [query]}, first.etags))
+    assert second.unchanged == {f"freehire:{query}"} and second.jobs == []
+    # A job recorded in the same batch (same timestamp) after the last check still counts as new.
+    page["data"].insert(0, page["data"][0] | {"public_slug": "same-batch"})
+    third = asyncio.run(fetch_all({"freehire": [query]}, first.etags))
+    assert [j.ext_id for j in third.jobs] == ["same-batch"]
+    assert json.loads(third.etags[f"freehire:{query}"])["slugs"] == ["same-batch", "security-engineer-i-acme-a1b2"]
+    page["data"].insert(0, page["data"][0] | {"public_slug": "newer", "created_at": "2026-10-26T08:00:00Z"})
+    fourth = asyncio.run(fetch_all({"freehire": [query]}, third.etags))
+    assert [j.ext_id for j in fourth.jobs] == ["newer"]
+
+
+def test_freehire_unknown_filter_fails_the_board(monkeypatch):
+    page = {"data": [], "meta": {"total": 0, "ignored_params": [{"param": "skill", "did_you_mean": "skills"}]}}
+    from job_radar import sources
+    real = httpx.AsyncClient
+    monkeypatch.setattr(sources, "_client",
+                        lambda: real(transport=httpx.MockTransport(lambda req: httpx.Response(200, json=page))))
+    out = asyncio.run(fetch_all({"freehire": ["skill=splunk"]}))
+    assert "ignored" in out.errors["freehire:skill=splunk"] and out.jobs == []
+
+
+def test_freehire_waits_out_rate_limit(monkeypatch):
+    responses = [httpx.Response(429, headers={"retry-after": "2"}),
+                 httpx.Response(200, json={"data": {"description": "ok"}})]
+    waits = []
+
+    async def fake_sleep(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(freehire.asyncio, "sleep", fake_sleep)
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: responses.pop(0))) as client:
+            job = freehire.normalize(fixture("freehire.json")["data"][1])
+            await freehire.hydrate(client, job)
+            return job
+
+    assert asyncio.run(go()).description == "ok" and waits == [2.0]
+
+
+def test_freehire_copies_of_polled_boards_are_duplicates():
+    job = freehire.normalize(fixture("freehire.json")["data"][0])
+    assert origin_board(job.apply_url) == ("workday:acme.wd5/External", "workday:acme:R12345")
+    assert is_duplicate(job, {"workday:acme.wd5/External"}, set())
+    assert not is_duplicate(job, {"workday:other.wd5/External"}, set())
+    blizzard = Job("freehire", "Blizzard Entertainment", "b", "Game Security Analyst", "Irvine, CA", False, "u", NOW, "")
+    blizzard.apply_url = "https://careers.blizzard.com/global/en/job/BLENGLOBALR028280EXTERNALENGLOBAL?utm_source=freehire.me"
+    assert is_duplicate(blizzard, set(), {"phenom:activisionblizzard:R028280"})
+    assert not is_duplicate(blizzard, set(), {"phenom:activisionblizzard:R999999"})
+
+
+def test_freehire_and_email_alerts_dont_double_alert():
+    linkedin_job = Job("linkedin", "Acme Robotics", "1", "Security Engineer I", "Alameda, CA", False, "u", NOW, "d")
+    freehire_job = freehire.normalize(fixture("freehire.json")["data"][0])
+    freehire_titles = title_index([("freehire", "Acme Robotics", "Security Engineer I")], "freehire")
+    linkedin_titles = title_index([("linkedin", "Acme Robotics", "Security Engineer I")], "linkedin")
+    # Same run: freehire's copy (the company's own posting) wins, and LinkedIn's is dropped.
+    assert is_duplicate(linkedin_job, set(), set(), freehire_titles=freehire_titles)
+    assert not is_duplicate(freehire_job, set(), set(), {}, linkedin_titles)
+    # LinkedIn sent it on an earlier run (maybe already alerted): freehire's copy is dropped.
+    assert is_duplicate(freehire_job, set(), set(), earlier_titles=linkedin_titles)
+
+
+def test_freehire_alerts_a_role_once():
+    a = Job("freehire", "Centene", "a", "Incident Response Analyst I", "Remote-MO", True, "u", NOW, "d")
+    b = Job("freehire", "Centene", "b", "Incident Response Analyst I", "Remote-MO", True, "u", NOW, "d")
+    c = Job("freehire", "Centene", "c", "Incident Response Analyst II", "Remote-MO", True, "u", NOW, "d")
+    assert repeats([a, b, c]) == [b]
+    # A copy of a role freehire listed on an earlier run is dropped too.
+    assert is_duplicate(b, set(), set(), earlier_titles=title_index([("freehire", "Centene", a.title)], "freehire"))
+
+
+def test_freehire_trial_report(tmp_path, capsys):
+    from job_radar.__main__ import print_freehire_trial
+    db = DB(tmp_path / "t.db")
+    print_freehire_trial(db)
+    assert capsys.readouterr().out == ""  # no freehire jobs yet: no report
+    jobs = [Job("freehire", "Acme", "a", "SOC Analyst", "Remote", True, "u", NOW, "d"),
+            Job("freehire", "Example", "b", "Detection Engineer", "Remote", True, "u", NOW, "d"),
+            Job("greenhouse", "example", "c", "Detection Engineer", "Remote", True, "u", NOW, "d"),
+            Job("linkedin", "Other", "d", "Threat Analyst", "Remote", True, "u", NOW, "d")]
+    db.upsert_jobs(jobs)
+    for job in jobs:
+        db.save_score(job.key, FitScore(fit_score=80, category="Detection & Response", seniority_fit="good",
+                                        matched_skills=[], missing_skills=[], red_flags=[], shift_or_oncall=False,
+                                        location_fit="ok", why="w", min_qualifications=[], preferred_qualifications=[]),
+                      refused=False, model="m", resume_hash="h", usage=Usage())
+    db.mark_alerted([j.key for j in jobs if j.source != "greenhouse"])
+    print_freehire_trial(db)
+    out = capsys.readouterr().out
+    assert "2 freehire alerts, 1 found by freehire only" in out
+    assert "only freehire:  80  SOC Analyst — Acme" in out
+    assert "freehire also listed 0 of the 1 other alerts: linkedin 0/1" in out
+

@@ -82,7 +82,7 @@ def _norm(text: str) -> str:
 
 # Imported after the helpers above, which the source modules use.
 from . import workday  # noqa: E402
-from . import ashby, gamejobs, greenhouse, lever, phenom  # noqa: E402
+from . import ashby, freehire, gamejobs, greenhouse, lever, phenom  # noqa: E402
 from . import email_alerts, resolve  # noqa: E402
 
 FETCHERS = {
@@ -92,15 +92,17 @@ FETCHERS = {
     "phenom": phenom.fetch,
     "gamejobs": gamejobs.fetch,
     "workday": workday.fetch,
+    "freehire": freehire.fetch,  # search filters, not companies
     "email": email_alerts.fetch,  # job-alert emails; jobs get source = the sender ("linkedin", "indeed")
 }
-AGGREGATORS = {"gamejobs", "linkedin", "indeed"}  # multi-company sources that may re-list jobs from boards we poll
+AGGREGATORS = {"gamejobs", "linkedin", "indeed", "freehire"}  # multi-company sources that may re-list jobs from boards we poll
 # Sources whose listing omits the description (and, for gamejobs, the location).
 HYDRATORS = {
     "greenhouse": greenhouse.hydrate,
     "phenom": phenom.hydrate,
     "gamejobs": gamejobs.hydrate,
     "workday": workday.hydrate,
+    "freehire": freehire.hydrate,
     "linkedin": resolve.hydrate,
     "indeed": resolve.hydrate,
 }
@@ -113,11 +115,12 @@ _ORIGIN_RES = [
 ]
 
 
-def title_index(jobs, source: str | None = None) -> dict[str, set[str]]:
-    """normalized title -> normalized company slugs, for jobs from boards we poll directly (or from `source`)."""
+def title_index(jobs, sources: str | set[str] | None = None) -> dict[str, set[str]]:
+    """normalized title -> normalized company slugs, for jobs from boards we poll directly (or from `sources`)."""
+    sources = {sources} if isinstance(sources, str) else sources
     index: dict[str, set[str]] = {}
     for src, company, title in jobs:
-        if src == source if source else src not in AGGREGATORS:
+        if src in sources if sources else src not in AGGREGATORS:
             index.setdefault(_norm(title), set()).add(_norm(company))
     return index
 
@@ -128,29 +131,60 @@ def _same_company(company: str, slugs) -> bool:
     return len(name) >= 3 and any(slug.startswith(name) or name.startswith(slug) for slug in slugs)
 
 
+def listed(index: dict[str, set[str]], company: str, title: str) -> bool:
+    """True if a title_index() has this title at a company whose name matches."""
+    return _same_company(company, index.get(_norm(title), ()))
+
+
 def origin_board(url: str) -> tuple[str, str] | None:
     """('greenhouse:acme', 'greenhouse:acme:123') for a link to a board we know how to poll."""
     for source, pattern in _ORIGIN_RES:
         if m := pattern.search(url or ""):
             return f"{source}:{m[1]}", f"{source}:{m[1]}:{m[2]}"
+    if (m := workday.URL_RE.match(url or "")) and (req := workday.req_id(url)):
+        return f"workday:{m['tenant']}.{m['wd']}/{m['site']}", f"workday:{m['tenant']}:{req}"
     return None
 
 
 def is_duplicate(job: Job, polled_boards: set[str], seen_keys: set[str], titles: dict[str, set[str]] | None = None,
-                 linkedin_titles: dict[str, set[str]] | None = None) -> bool:
-    """True if an aggregator job is a posting we already get from the company's own board, or (Indeed) from LinkedIn."""
+                 linkedin_titles: dict[str, set[str]] | None = None, *, freehire_titles: dict[str, set[str]] | None = None,
+                 earlier_titles: dict[str, set[str]] | None = None) -> bool:
+    """True if an aggregator job is a posting we already get from the company's own board or another aggregator.
+
+    Indeed defers to LinkedIn. LinkedIn, Indeed and GameJobs defer to freehire, whose copy is the company's
+    own posting with its full description; freehire defers to them only for jobs they sent on an earlier
+    run (`earlier_titles`), which may already have been alerted. `earlier_titles` includes freehire's own
+    earlier jobs, since it can list one role twice (a repost, or a posting per city).
+    """
     if job.source not in AGGREGATORS:
         return False
-    if job.source == "indeed" and _same_company(job.company, (linkedin_titles or {}).get(_norm(job.title), ())):
+    if job.source == "indeed" and listed(linkedin_titles or {}, job.company, job.title):
         return True  # LinkedIn's copy can get the full description; Indeed's can't
-    if origin := origin_board(job.apply_url):
-        return origin[0] in polled_boards or origin[1] in seen_keys
-    if (req := workday.req_id(job.apply_url)) and any(
+    if job.source == "freehire":
+        if listed(earlier_titles or {}, job.company, job.title):
+            return True
+    elif listed(freehire_titles or {}, job.company, job.title):
+        return True
+    if (origin := origin_board(job.apply_url)) and (origin[0] in polled_boards or origin[1] in seen_keys):
+        return True
+    if (req := workday.req_id(job.apply_url) or phenom.req_id(job.apply_url)) and any(
         k.startswith("phenom:") and k.endswith(f":{req}") for k in seen_keys
     ):
         return True
-    # No usable link: same title at a company whose name matches a polled board's slug.
-    return _same_company(job.company, (titles or {}).get(_norm(job.title), ()))
+    # Same title at a company whose name matches a polled board's slug.
+    return listed(titles or {}, job.company, job.title)
+
+
+def repeats(jobs: list[Job]) -> list[Job]:
+    """freehire jobs repeating an earlier one in the list: same title at the same company."""
+    seen, out = set(), []
+    for job in jobs:
+        if job.source == "freehire":
+            role = (_norm(job.company), _norm(job.title))
+            if role in seen:
+                out.append(job)
+            seen.add(role)
+    return out
 
 
 def _client() -> httpx.AsyncClient:

@@ -35,6 +35,11 @@ Years of experience asked for matter most: treat internship + lab work as roughl
 Explicit "new grad" or "early career" is a strong positive. Be skeptical: a high score should mean \
 "they're competitive for this today".
 
+Judge location_fit from what the posting says about where to live or work, not from the Location line \
+alone. A "flexible" or "hybrid" role expects office time. A remote job whose Location names a city or \
+state outside the candidate's area is "unclear" unless the posting says who it hires (anywhere in the \
+country: ok; only certain states or regions: ok or elsewhere). It doesn't change fit_score.
+
 Base matched_skills only on what the resume actually shows. Keep every item in matched_skills, \
 missing_skills and red_flags short (2-5 words), at most 6 items per list.
 

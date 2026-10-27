@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/matias-mn/job-radar/actions/workflows/tests.yml/badge.svg)](https://github.com/matias-mn/job-radar/actions/workflows/tests.yml)
 
-I built job-radar to run my own job search. Every 15 minutes it pulls new security postings from about 130 company job boards (Greenhouse, Lever, Ashby, Workday), Activision Blizzard's career site, GameJobs.co, and LinkedIn and Indeed job-alert emails. It filters them and has an LLM (OpenAI by default, Claude optional) score each one against my resume. Each good match goes to Slack as soon as it's scored, along with the posting's minimum and preferred qualifications.
+I built job-radar to run my own job search. Every 15 minutes it pulls new security postings from about 130 company job boards (Greenhouse, Lever, Ashby, Workday), [freehire](https://github.com/strelov1/freehire)'s open index of postings from 120+ applicant tracking systems, Activision Blizzard's career site, GameJobs.co, and LinkedIn and Indeed job-alert emails. It filters them and has an LLM (OpenAI by default, Claude optional) score each one against my resume. Each good match goes to Slack as soon as it's scored, along with the posting's minimum and preferred qualifications.
 
 It's the same pattern as the detection tooling I build at work: collect noisy data from many sources, normalize it, filter cheaply first, use an LLM only where judgment is needed, and alert with enough context to act.
 
@@ -18,10 +18,10 @@ It's the same pattern as the detection tooling I build at work: collect noisy da
 - **Cheap polling:** every board returns an ETag. job-radar sends it back on the next check, and boards with no changes answer `304 Not Modified` with an empty body. Workday has no ETags, so each board remembers the job IDs it has seen and reads newest-first until it hits known ones. A check where nothing changed downloads almost nothing.
 - **Async fetching:** `httpx` with one fetcher per source, each normalizing to a shared `Job` model. A board that fails is reported and skipped instead of stopping the run.
 - **Structured LLM output:** the scorer returns a typed `FitScore` (score, category, seniority fit, matched and missing skills, red flags, shift/on-call flag, qualifications). Both providers are supported. A fixed rubric and resume prefix is prompt-cached, and there's a per-run cost cap.
-- **Dedupe across sources:** the same job shows up on a company board, LinkedIn, Indeed and GameJobs. Matching by link or by company + title means each job is scored and alerted once.
+- **Dedupe across sources:** the same job shows up on a company board, freehire, LinkedIn, Indeed and GameJobs. Matching by link or by company + title means each job is scored and alerted once.
 - **Graceful degradation:** alert emails carry only a title. job-radar looks for the full posting on the company's own board, then on LinkedIn's public job page (paced, with backoff on 429s). If neither works, it scores from the title and marks the score as a guess (`72?`).
 - **Privacy by default:** contact info is stripped from the resume before it's sent to the API, and tracking tokens are stripped from email links. Personal config stays local (see [What stays local](#what-stays-local)).
-- **Tested:** 90+ pytest tests with mocked HTTP and IMAP for every source. No network or API keys needed, and they run in GitHub Actions.
+- **Tested:** 100+ pytest tests with mocked HTTP and IMAP for every source. No network or API keys needed, and they run in GitHub Actions.
 
 ## Setup
 
@@ -66,7 +66,7 @@ job-radar reads that inbox over IMAP (read-only; emails stay unread) and only op
 .venv/bin/python -m job_radar run               # score and post to Slack
 .venv/bin/python -m job_radar run --full        # ignore ETags, re-check every board
 .venv/bin/python -m job_radar check-companies   # verify every board in config.toml
-.venv/bin/python -m job_radar stats             # totals + estimated API spend
+.venv/bin/python -m job_radar stats             # totals, estimated API spend, what freehire adds
 .venv/bin/python -m job_radar rehydrate         # re-read LinkedIn jobs stored without a description, re-score them
 ```
 
@@ -85,11 +85,12 @@ job-radar reads that inbox over IMAP (read-only; emails stay unread) and only op
   - Boards bigger than `big_board_mb` (OpenAI's Ashby board is ~14 MB) are checked at most every `big_board_interval_minutes`.
   - `phenom`: Activision Blizzard's career site. Full descriptions come from its Workday postings.
   - `gamejobs`: GameJobs.co searches. Entries are queries, not companies. Each job's page gives its location, description and application link. Jobs it re-lists from boards above are skipped, matched by that link or by company + title. Neither `phenom` nor `gamejobs` sends ETags, so each check re-downloads about 0.4 MB.
+  - `freehire`: searches of [freehire.me](https://freehire.me/docs/api)'s public API, which indexes postings from 120+ applicant tracking systems (Oracle, iCIMS, SmartRecruiters, Eightfold, …) that job-radar has no fetcher for. Entries are filter strings for its `/jobs/search` endpoint, e.g. `category=security&requires_clearance=false`, limited to US jobs unless an entry sets `countries`. No key is needed for personal, non-commercial use (600 requests a minute). Results are read newest-first until the jobs the last check saw, so a quiet check is about 0.15 MB; the first check reads the last 15 days (~12 MB). A new job that passes the filters gets its full posting from freehire. A filter freehire doesn't recognize fails `check-companies` instead of quietly widening the search. freehire re-lists jobs from boards job-radar polls (dropped by link: Greenhouse, Lever, Ashby, Workday and Activision postings) and from LinkedIn, Indeed and GameJobs (dropped by company + title: freehire's copy wins, unless the alert email sent it on an earlier run). `stats` shows how many alerts only freehire found and how many of the other alerts it also listed, per source.
   - `email`: job-alert emails in `ALERT_EMAIL`. Entries are senders: `"linkedin"`, `"indeed"`. Each board remembers the last email it read; the first check reads the last 15 days. Emails don't include descriptions, so job-radar looks for the same title on the company's Greenhouse, Lever or Ashby board (guessing the slug from the company name). Found: full description, and the alert links to the company's posting. Not found (most big companies): a LinkedIn job takes its description from LinkedIn's public job page (no login), headed by LinkedIn's seniority level, which is what catches "Security Engineer" postings that want 8+ years. Those pages are read one at a time, 3 seconds apart. LinkedIn sometimes answers 429 anyway, so a refusal is retried after 15 s, then 30 s, and after three in a row LinkedIn's pages are skipped for the rest of the run. An Indeed job that LinkedIn also sent (same title and company) is dropped as a duplicate, since Indeed's pages block scripts. Anything still without a description is scored on title, company, location and (Indeed only) the one-line snippet, capped at `limited_info_max_score`, and the alert is tagged `📧 LinkedIn alert · limited info` or `📧 Indeed alert · limited info`. When a job turns up on a board config.toml doesn't poll, the log suggests adding it.
-- **Filters:** `title_include`, `title_exclude`, `bay_area`, `us_markers`, `non_us_markers`.
+- **Filters:** `title_include`, `title_exclude`, `bay_area`, `us_markers`, `non_us_markers`. Each part of a multi-location posting (`;`, `|`, `/`, ` or `) is checked on its own, so "San Jose, Costa Rica" isn't San Jose, CA. `filters.NON_US_PLACES` adds countries and big tech hubs abroad to `non_us_markers`, so a remote posting from a place nobody listed doesn't pass as US.
 - **Thresholds:** `alert_threshold`, `max_age_days`, `max_llm_calls_per_run` (cost cap).
 - **Gaming:** `[gaming] any_us_location = true` lets gaming jobs anywhere in the US through the location filter. Board slugs under `[gaming] companies` (and every job from `[gaming] sources`) alert at `[gaming] alert_threshold` (default 60) instead of 70, get a 🎮 tag, and are sent first. The LLM is told about the preference but still scores fit honestly; the boost is applied by the threshold, not by inflating scores.
-- **What "a good fit" means:** `profile.md` describes the candidate, and the rubric in `job_radar/scorer.py` (`RUBRIC`) says how to score: how well the resume matches and how realistic the job is. Shift work, on-call and role type (SOC, GRC, physical security) don't lower the score; they're flagged so I can decide.
+- **What "a good fit" means:** `profile.md` describes the candidate, and the rubric in `job_radar/scorer.py` (`RUBRIC`) says how to score: how well the resume matches and how realistic the job is. Shift work, on-call and role type (SOC, GRC, physical security) don't lower the score; they're flagged so I can decide. The scorer also judges `location_fit` from the posting's own words about where you'd live or work: a job tied to somewhere else (offices outside your area, or remote only in states that leave yours out) isn't alerted, and a remote job that names an out-of-area city without saying whether you must live there is tagged 📍.
 - **Each alert shows** a job category (SOC / Security Operations, Detection & Response, GRC, Physical Security, …; the list is `CATEGORIES` in `job_radar/models.py`), the posted date, and a shift/on-call tag.
 - **Resume:** read live from `resume_path`, so editing the .docx takes effect on the next run. Everything above the EDUCATION header (name, phone, email) is removed before it's sent to the API.
 
@@ -133,7 +134,7 @@ These files are gitignored, so nothing personal is in the repo:
 
 | Path | What it does |
 |---|---|
-| `job_radar/sources/` | One fetcher per source (Greenhouse, Lever, Ashby, Workday, Phenom, GameJobs, LinkedIn/Indeed email), each normalizing to a `Job`; `resolve.py` finds full postings for email jobs |
+| `job_radar/sources/` | One fetcher per source (Greenhouse, Lever, Ashby, Workday, Phenom, GameJobs, freehire, LinkedIn/Indeed email), each normalizing to a `Job`; `resolve.py` finds full postings for email jobs |
 | `job_radar/filters.py` | Title, seniority, location, age filters |
 | `job_radar/scorer.py` | Rubric + OpenAI or Claude call → `FitScore` |
 | `job_radar/db.py` | SQLite: `jobs`, `scores`, `alerts`, board state |

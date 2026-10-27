@@ -2,10 +2,15 @@
 middle label: careers.{slug}.com. Search results only have a teaser, so the full
 description comes from the linked Workday posting in hydrate()."""
 
+import re
+
 import httpx
 
 from ..models import Job
 from . import parse_iso, workday
+
+# careers.blizzard.com/global/en/job/BLENGLOBALR028280EXTERNALENGLOBAL -> R028280 (the jobId)
+JOB_URL_RE = re.compile(r"careers\.[\w-]+\.com/(?:[\w-]+/)*job/[A-Z]*?(R\d+)")
 
 URL = "https://careers.{slug}.com/widgets"
 PAGE = 50
@@ -20,6 +25,12 @@ def _body(slug: str, offset: int) -> dict:
         "ddoKey": "refineSearch", "from": offset, "size": PAGE, "keywords": "", "jobs": True,
         "siteType": "external", "global": True, "selected_fields": {},
     }
+
+
+def req_id(url: str) -> str | None:
+    """The jobId in a link to a Phenom posting page."""
+    m = JOB_URL_RE.search(url or "")
+    return m[1] if m else None
 
 
 def normalize(slug: str, raw: dict) -> Job:

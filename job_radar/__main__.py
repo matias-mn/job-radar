@@ -28,7 +28,8 @@ from .db import DB
 from .models import LIMITED_INFO
 from .resume import load_resume
 from .scorer import RateLimited, make_scorer
-from .sources import fetch_all, hydrate_all, is_duplicate, linkedin, origin_board, title_index
+from .sources import (AGGREGATORS, fetch_all, hydrate_all, is_duplicate, linkedin, listed, origin_board, repeats,
+                      title_index)
 
 ROOT = Path(__file__).resolve().parent.parent
 log = logging.getLogger("job_radar")
@@ -169,9 +170,14 @@ def cmd_run(cfg: dict, dry_run: bool, full: bool) -> int:
     # Hydration can reveal a location (aggregators) or a posting we already poll directly.
     polled = {f"{src}:{slug}" for src, slugs in cfg["companies"].items() for slug in slugs}
     seen = known | {j.key for j in fetched.jobs}
-    all_titles = db.titles() + [(j.source, j.company, j.title) for j in fetched.jobs]
+    stored_titles = db.titles()
+    all_titles = stored_titles + [(j.source, j.company, j.title) for j in fetched.jobs]
     titles, linkedin_titles = title_index(all_titles), title_index(all_titles, "linkedin")
-    late_drop = [j for j in new if is_duplicate(j, polled, seen, titles, linkedin_titles) or not flt.location_ok(j)]
+    freehire_titles = title_index(all_titles, "freehire")
+    earlier_titles = title_index(stored_titles, AGGREGATORS)
+    late_drop = [j for j in new if is_duplicate(j, polled, seen, titles, linkedin_titles, freehire_titles=freehire_titles,
+                                                earlier_titles=earlier_titles) or not flt.location_ok(j)]
+    late_drop += repeats([j for j in new if j not in late_drop])
     for board in sorted({o[0] for j in new if j.source in ("linkedin", "indeed") and (o := origin_board(j.apply_url))} - polled):
         log.info("Email alert job found on %s, which config.toml doesn't poll yet; consider adding it", board)
     new = [j for j in new if j not in late_drop]
@@ -338,7 +344,31 @@ def cmd_stats(cfg: dict) -> int:
         print(f"est. spend:    ${cost:.2f}  (at {s['model']} prices from config.toml)")
     else:
         print(f"est. spend:    add [prices.\"{s['model']}\"] to config.toml to estimate")
+    print_freehire_trial(DB(ROOT / s["db_path"]))
     return 0
+
+
+def print_freehire_trial(db: DB) -> None:
+    """How much freehire adds: alerts only it found, and how many other alerts it also listed."""
+    start = db.first_seen("freehire")
+    if not start:
+        return
+    alerted = db.alerted_since(start)
+    stored = db.titles()
+    freehire_titles = title_index(stored, "freehire")
+    other_titles = title_index(stored, {src for src, _, _ in stored} - {"freehire"})
+    ours = [a for a in alerted if a["source"] == "freehire"]
+    only = [a for a in ours if not listed(other_titles, a["company"], a["title"])]
+    others = [a for a in alerted if a["source"] != "freehire"]
+    total, also = Counter(a["source"] for a in others), Counter()
+    for a in others:
+        also[a["source"]] += listed(freehire_titles, a["company"], a["title"])
+    print(f"\nfreehire trial (since {start[:10]}):")
+    print(f"  {len(ours)} freehire alerts, {len(only)} found by freehire only")
+    print(f"  freehire also listed {sum(also.values())} of the {len(others)} other alerts"
+          + (f": {', '.join(f'{src} {also[src]}/{n}' for src, n in total.most_common())}" if others else ""))
+    for a in only:
+        print(f"    only freehire: {a['fit_score']:>3}  {a['title']} — {a['company']}")
 
 
 def main() -> int:

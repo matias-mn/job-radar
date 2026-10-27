@@ -1,0 +1,39 @@
+{
+  "data": [
+    {
+      "public_slug": "security-engineer-i-acme-a1b2",
+      "source": "workday",
+      "url": "https://acme.wd5.myworkdayjobs.com/External/job/Alameda-CA/Security-Engineer-I_R12345?utm_source=freehire.me",
+      "title": "Security Engineer I ",
+      "company": "Acme Robotics",
+      "company_slug": "acme-robotics",
+      "location": "Alameda, CA",
+      "description": "<p>Preview only...</p>",
+      "countries": ["us"],
+      "metros": ["San Francisco Bay Area (US)"],
+      "cities": ["Alameda"],
+      "work_mode": "hybrid",
+      "posted_at": "2026-10-24T00:00:00Z",
+      "created_at": "2026-10-25T09:00:00Z",
+      "enrichment": {"salary_min": 110000, "salary_max": 140000, "salary_currency": "USD", "salary_period": "year"}
+    },
+    {
+      "public_slug": "soc-analyst-example-c3d4",
+      "source": "greenhouse",
+      "url": "https://boards.greenhouse.io/examplehealth/jobs/777?utm_source=freehire.me",
+      "title": "SOC Analyst",
+      "company": "Example Health",
+      "company_slug": "example-health",
+      "location": "",
+      "description": "<p>Preview only...</p>",
+      "countries": ["us"],
+      "metros": [],
+      "cities": [],
+      "work_mode": "remote",
+      "posted_at": null,
+      "created_at": "2026-10-24T18:30:00Z",
+      "enrichment": {}
+    }
+  ],
+  "meta": {"total": 2, "limit": 100, "offset": 0}
+}

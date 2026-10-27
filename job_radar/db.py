@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS scores (
     model TEXT, resume_hash TEXT, scored_at TEXT,
     input_tokens INTEGER, output_tokens INTEGER,
     cache_read_tokens INTEGER, cache_write_tokens INTEGER,
-    category TEXT, min_qualifications TEXT, preferred_qualifications TEXT
+    category TEXT, min_qualifications TEXT, preferred_qualifications TEXT, location_fit TEXT
 );
 CREATE TABLE IF NOT EXISTS alerts (
     key TEXT PRIMARY KEY REFERENCES jobs(key),
@@ -58,7 +58,8 @@ class DB:
             if col not in columns:
                 self.conn.execute(f"ALTER TABLE boards ADD COLUMN {col} {kind}")
         score_columns = {r["name"] for r in self.conn.execute("PRAGMA table_info(scores)")}
-        for col in ("category", "min_qualifications", "preferred_qualifications"):  # added in v0.4, v0.5, v0.5
+        for col in ("category", "min_qualifications", "preferred_qualifications",
+                    "location_fit"):  # added in v0.4, v0.5, v0.5, v0.6
             if col not in score_columns:
                 self.conn.execute(f"ALTER TABLE scores ADD COLUMN {col} TEXT")
 
@@ -154,7 +155,7 @@ class DB:
     def save_score(self, key: str, fit: FitScore | None, *, refused: bool, model: str, resume_hash: str, usage) -> None:
         f = fit.model_dump() if fit else {}
         self.conn.execute(
-            """INSERT OR REPLACE INTO scores VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT OR REPLACE INTO scores VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 key, f.get("fit_score"), f.get("seniority_fit"),
                 json.dumps(f.get("matched_skills", [])), json.dumps(f.get("missing_skills", [])),
@@ -162,6 +163,7 @@ class DB:
                 int(refused), model, resume_hash, _now(),
                 usage.input, usage.output, usage.cache_read, usage.cache_write, f.get("category"),
                 json.dumps(f.get("min_qualifications", [])), json.dumps(f.get("preferred_qualifications", [])),
+                f.get("location_fit"),
             ),
         )
         self.conn.commit()
@@ -172,9 +174,10 @@ class DB:
         rows = self.conn.execute(
             """SELECT j.*, s.fit_score, s.seniority_fit, s.matched_skills, s.missing_skills,
                       s.red_flags, s.shift_or_oncall, s.why, s.category,
-                      s.min_qualifications, s.preferred_qualifications
+                      s.min_qualifications, s.preferred_qualifications, s.location_fit
                FROM scores s JOIN jobs j USING (key)
                WHERE s.refused = 0 AND s.fit_score >= ? AND s.seniority_fit != 'too_senior'
+                 AND COALESCE(s.location_fit, '') != 'elsewhere'
                  AND j.status != 'dismissed'
                  AND key NOT IN (SELECT key FROM alerts)
                ORDER BY s.fit_score DESC, j.posted_at DESC""",
@@ -195,6 +198,17 @@ class DB:
     def mark_alerted(self, keys: list[str]) -> None:
         self.conn.executemany("INSERT OR IGNORE INTO alerts VALUES (?, ?)", [(k, _now()) for k in keys])
         self.conn.commit()
+
+    def first_seen(self, source: str) -> str | None:
+        return self.conn.execute("SELECT MIN(first_seen) FROM jobs WHERE source = ?", (source,)).fetchone()[0]
+
+    def alerted_since(self, since: str) -> list[dict]:
+        return [dict(r) for r in self.conn.execute(
+            """SELECT j.source, j.company, j.title, s.fit_score FROM alerts a
+               JOIN jobs j USING (key) JOIN scores s USING (key)
+               WHERE a.alerted_at >= ? ORDER BY s.fit_score DESC""",
+            (since,),
+        )]
 
     def stats(self, threshold: int) -> dict:
         row = self.conn.execute(

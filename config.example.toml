@@ -31,6 +31,13 @@ phenom = ["activisionblizzard"]
 gamejobs = ["security", "anti-cheat", "threat", "detection", "incident response", "fraud"]
 # Job-alert emails forwarded to ALERT_EMAIL (see .env). Entries are senders: "linkedin", "indeed".
 email = ["linkedin", "indeed"]
+# freehire.me searches: an open index of ~3M postings from 120+ applicant tracking systems, no key needed.
+# Entries are filters for its search API (https://freehire.me/docs/api), limited to US jobs unless an
+# entry sets countries. A filter freehire doesn't recognize fails the check instead of widening the search.
+freehire = [
+  "category=security&requires_clearance=false",
+  'q=title:"trust safety" OR title:fraud OR title:"anti-cheat" OR title:anticheat&requires_clearance=false',
+]
 lever = ["palantir", "xsolla"]
 ashby = ["snyk", "1password", "hackerone", "openai"]
 
@@ -76,6 +83,7 @@ title_exclude = [
   "iii", "iv", "intern", "interns", "internship", "internships", "sales", "account executive",
   "account manager", "marketing", "recruiter", "counsel", "attorney", "legal",
   "level 5", "level 6", "level 7", "l5", "l6", "l7",  # senior levels (Snap and others)
+  "plumber", "plumbing", "leak detection",  # "detection" outside security
 ]
 bay_area = [
   "san jose", "santa clara", "sunnyvale", "mountain view", "palo alto",

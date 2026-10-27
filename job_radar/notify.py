@@ -43,6 +43,8 @@ def _tags(r: dict) -> str:
     tags = [r.get("category") or "uncategorized", _posted(r.get("posted_at"))]
     if r.get("shift_or_oncall"):
         tags.append("shift/on-call")
+    if r.get("location_fit") == "unclear":
+        tags.append("📍 check where you'd have to live")
     if r.get("source") in EMAIL_SOURCES:
         tags.append(f"📧 {EMAIL_SOURCES[r['source']]} alert")
     if _limited(r):
