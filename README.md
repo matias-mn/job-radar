@@ -29,7 +29,7 @@ It's the same pattern as the detection tooling I build at work: collect noisy da
 git clone https://github.com/matias-mn/job-radar.git && cd job-radar
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cp config.example.toml config.toml    # point resume_path at your .docx resume, pick your boards
+cp config.example.toml config.toml    # point resume_path at your .docx or .pdf resume, pick your boards
 cp profile.example.md profile.md      # who you are and what you want, in plain English
 cp .env.example .env                  # API key + Slack (see below)
 .venv/bin/python -m pytest            # should pass
@@ -92,7 +92,7 @@ job-radar reads that inbox over IMAP (read-only; emails stay unread) and only op
 - **Gaming:** `[gaming] any_us_location = true` lets gaming jobs anywhere in the US through the location filter. Board slugs under `[gaming] companies` (and every job from `[gaming] sources`) alert at `[gaming] alert_threshold` (default 60) instead of 70, get a 🎮 tag, and are sent first. The LLM is told about the preference but still scores fit honestly; the boost is applied by the threshold, not by inflating scores.
 - **What "a good fit" means:** `profile.md` describes the candidate, and the rubric in `job_radar/scorer.py` (`RUBRIC`) says how to score: how well the resume matches and how realistic the job is. Shift work, on-call and role type (SOC, GRC, physical security) don't lower the score; they're flagged so I can decide. The scorer also judges `location_fit` from the posting's own words about where you'd live or work: a job tied to somewhere else (offices outside your area, or remote only in states that leave yours out) isn't alerted, and a remote job that names an out-of-area city without saying whether you must live there is tagged 📍.
 - **Each alert shows** a job category (SOC / Security Operations, Detection & Response, GRC, Physical Security, …; the list is `CATEGORIES` in `job_radar/models.py`), the posted date, and a shift/on-call tag.
-- **Resume:** read live from `resume_path`, so editing the .docx takes effect on the next run. Everything above the EDUCATION header (name, phone, email) is removed before it's sent to the API.
+- **Resume:** read live from `resume_path` (.docx or .pdf), so an edit takes effect on the next run. `resume_path` can also be a glob such as `~/Resumes/Resume MASTER*`: the newest matching .docx/.pdf is used, so a re-export saved under a new name is picked up without a config change. Everything above the EDUCATION header (name, phone, email) is removed before it's sent to the API.
 
 ## Schedule (launchd, macOS)
 
@@ -139,7 +139,7 @@ These files are gitignored, so nothing personal is in the repo:
 | `job_radar/scorer.py` | Rubric + OpenAI or Claude call → `FitScore` |
 | `job_radar/db.py` | SQLite: `jobs`, `scores`, `alerts`, board state |
 | `job_radar/notify.py` | Slack Block Kit alerts |
-| `job_radar/resume.py` | .docx → text, contact info removed |
+| `job_radar/resume.py` | .docx / .pdf → text, contact info removed |
 | `tests/` | pytest suite; fixtures are hand-made, not real emails or postings |
 
 ## Next

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import tomllib
 import zipfile
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ import pytest
 from job_radar import filters, notify
 from job_radar.db import DB
 from job_radar.models import LIMITED_INFO, FitScore, Job
-from job_radar.resume import load_resume
+from job_radar.resume import load_resume, resolve_resume
 from job_radar.scorer import AnthropicScorer, OpenAIScorer, Usage, make_scorer
 from job_radar.sources import (Fetched, ashby, fetch_all, freehire, gamejobs, greenhouse, html_to_text, hydrate_all,
                                is_duplicate, lever, origin_board, phenom, repeats, title_index, workday)
@@ -161,6 +162,59 @@ def test_resume_strips_contact_info(tmp_path):
     assert "Jane" not in text and "555" not in text and "@" not in text
     assert "phishing-domain detection" in text
     assert len(digest) == 12
+
+
+def make_pdf(path, lines):
+    """A minimal one-page PDF with one text line per entry."""
+    stream = "BT /F1 11 Tf 14 TL 54 740 Td " + " ".join(f"({line}) Tj T*" for line in lines) + " ET"
+    objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        "/Resources << /Font << /F1 5 0 R >> >> >>",
+        f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out, offsets = "%PDF-1.4\n", []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n{body}\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n"
+    out += "".join(f"{offset:010d} 00000 n \n" for offset in offsets)
+    out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+    path.write_bytes(out.encode("ascii"))
+
+
+def test_resume_reads_pdf_and_strips_contact_info(tmp_path):
+    resume = tmp_path / "resume.pdf"
+    make_pdf(resume, ["Jane Doe", "555 010-0000 | jane@example.com | linkedin.com/in/janedoe",
+                      "EDUCATION      Expected Graduation: May 2027", "B.S. Computer Science",
+                      "EXPERIENCE", "Built a phishing-domain detection service"])
+    text, digest = load_resume(resume)
+    assert text.splitlines()[0] == "EDUCATION Expected Graduation: May 2027"
+    assert "Jane" not in text and "555" not in text and "@" not in text
+    assert text.splitlines()[-1] == "Built a phishing-domain detection service"
+    assert len(digest) == 12
+
+
+def test_resume_glob_picks_newest_export(tmp_path):
+    old, new, lock = tmp_path / "Resume MASTER.docx", tmp_path / "Resume MASTER-1.docx", tmp_path / "~$Resume MASTER.docx"
+    make_docx(old, ["EDUCATION", "old version"])
+    make_docx(new, ["EDUCATION", "new version"])
+    lock.write_text("lock")
+    (tmp_path / "Resume MASTER notes.txt").write_text("not a resume")
+    os.utime(old, (1000, 1000))
+    os.utime(new, (2000, 2000))
+    assert resolve_resume(tmp_path / "Resume MASTER*") == new
+    assert "new version" in load_resume(tmp_path / "*MASTER*")[0]
+    with pytest.raises(FileNotFoundError):
+        load_resume(tmp_path / "CV*")
+
+
+def test_resume_rejects_other_formats(tmp_path):
+    with pytest.raises(ValueError):
+        load_resume(tmp_path / "resume.pages")
 
 
 # ---- db + notify ----

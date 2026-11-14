@@ -1,7 +1,7 @@
 # job-radar config. Copy to config.toml (gitignored) and edit; every run re-reads it.
 
 [settings]
-resume_path = "~/path/to/resume.docx"   # .docx; contact info above EDUCATION is stripped
+resume_path = "~/path/to/resume.docx"   # .docx or .pdf, or a glob like "~/Resumes/Resume*" (newest match wins); contact info above EDUCATION is stripped
 db_path = "job-radar.db"            # relative to the project folder
 provider = "openai"                 # "openai" or "anthropic"; the matching API key goes in .env
 model = "gpt-5-mini"                # anthropic: "claude-opus-5-5"
